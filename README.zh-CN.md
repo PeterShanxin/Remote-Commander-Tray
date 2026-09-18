@@ -3,7 +3,7 @@
 一个极轻量的 Windows 系统托盘小工具，负责运行和管理官方
 [Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) Remote Device。
 
-它不重新实现 Desktop Commander，也绝不接触任何 OAuth token。它只负责两件事：
+它不重新实现 Desktop Commander，也不管理官方的凭据存储。它只负责两件事：
 Windows 侧的使用体验，以及一个 `desktop-commander remote` 进程的生命周期。
 
 [English](README.md)
@@ -11,12 +11,12 @@ Windows 侧的使用体验，以及一个 `desktop-commander remote` 进程的�
 ## 功能
 
 - 登录 Windows 后自动启动 Remote Device，不弹出 console 窗口。
-- 托盘图标一眼可见真实连接状态。
+- 托盘图标显示官方 CLI 最近报告的连接状态。
 - Agent crash 后自动重启，退避间隔 `5s → 15s → 30s → 60s`。
 - 网络短暂抖动时不重启 agent：官方 device 自己处理 heartbeat、stale connection
   和 channel recreation。
 - 登录失效时明确提醒，一次点击即可重新认证。
-- 永远最多一个 agent；Exit 后没有残留进程。
+- 同一 supervisor 最多管理一代 agent；Stop / Exit 清理其完整进程树。
 
 ## 环境要求
 
@@ -108,10 +108,13 @@ Exit
 
 **Re-authenticate...** 只做四件事：
 
-1. 停止当前 child process；
+1. 停止当前 agent 的完整进程树；
 2. 调用官方 `desktop-commander remote --logout`；
-3. 重新启动 `desktop-commander remote`；
+3. 只有官方 logout 成功后，才重新启动 `desktop-commander remote`；
 4. 显示官方 CLI 打印出来的登录地址和验证码。
+
+运行中的会话彻底失效时，只提醒一次，并显示 **Sign in again...**。由用户触发重新登录，
+不会循环弹浏览器；退出登录失败时也不会用旧凭据静默启动新 agent。
 
 托盘从不读取、写入、复制或解析 `device.json`，也不实现 OAuth 流程的任何部分。
 
@@ -125,25 +128,27 @@ logs\agent.log            （1 MB 自动 rotation，保留 3 份）
 logs\agent-verbose.log    （仅在 verboseAgentLog 打开时）
 ```
 
-`agent.log` 只保存托盘自己的消息和 CLI 的状态行，**不保存** tool call 的参数和结果：
-官方 CLI 用 `JSON.stringify` 记录 tool call 结果，一次 `read_file` 读到凭据文件就会
-进日志、再通过 "Copy diagnostics" 进剪贴板。这类行会被缩减成 `tool call <name>` 和
-`<tool result omitted, N chars>`。
+`agent.log` 只记录程序生成的运行事件名称和省略标记，不保存 CLI 原始行、工具参数、
+返回值、工具名称或未知文本。短字符串和嵌套转义 JSON 也不会原样保存。正则脱敏只是
+额外防护，不作为处理任意工具输出的安全保证。
 
-打开 `verboseAgentLog` 会把原始输出写到另一个文件。那个文件可能包含任何 tool call
-读到的内容，diagnostics 永远不读它，打开它属于明确选择保留敏感数据。
+**Copy diagnostics 只复制结构化运行摘要**：版本、系统、状态、进程是否运行、计数和时间。
+不会附带日志尾部、命令参数、账号/设备自由文本或原始错误。旧版本已有日志也不例外。
 
-`settings.json` 的各项含义见 [英文 README](README.md#settingsjson)。
+`verboseAgentLog` 是独立的敏感调试日志开关，默认关闭。开启后可能保存工具读到的凭据，
+不要未经检查直接分享；诊断复制永远不包含它。升级不会静默删除或自动清洗旧日志。
 
-"Launch at sign-in" 刻意不放在这里：它的唯一真实来源是用户级注册表项
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\RemoteCommanderTray`，
-这样从 Windows 自带的"启动应用"页面改动也不会和文件里的副本产生分歧。
+各设置见 [英文 README](README.md#settingsjson)。进程必须成功进入 Job Object 才能运行，
+没有绕过此保护的开关。
+
+自启动状态同时读取 Run 注册与 Windows 自己的 StartupApproved 状态。Windows 已禁用时
+保留其选择，未知格式或读取失败时显示“未知”，并引导到系统“启动应用”设置，不擅自改写。
 
 ## 安全边界
 
 托盘：
 
-- 不解析、不存储、不复制 token；
+- 不读取官方凭据存储，也不实现 token 持久化；
 - 不读写 `device.json`；
 - 不实现 OAuth；
 - 不实现 Remote MCP protocol；
@@ -152,19 +157,28 @@ logs\agent-verbose.log    （仅在 verboseAgentLog 打开时）
 官方 Desktop Commander 继续拥有 authentication、device identity、Remote MCP 连接、
 MCP 命令执行和全部凭据。托盘只读取 CLI 自己的 stdout / stderr 来判断该画什么。
 
-Agent 输出被当作不可信输入：状态行在归一化之后按前缀匹配，因此日志里的 tool call
-即使带有任意文本，也无法伪造状态变化。
+Agent 输出被当作不可信输入：先识别已知工具日志格式，再匹配状态前缀。它是兼容性解析器，
+不是结构化状态协议。普通日志和诊断排除原始工具内容；主动开启的 verbose 日志仍可能
+保留敏感输出，参见上方说明。
 
 ## 从源码构建
 
 ```powershell
 dotnet test RemoteCommanderTray.sln
+# 仅 Windows：真实进程树与隔离注册表测试
+dotnet run --project tests/RemoteCommanderTray.Windows.Integration -c Release
 dotnet publish src/RemoteCommanderTray/RemoteCommanderTray.csproj -c Release -r win-x64   -o publish/win-x64
 dotnet publish src/RemoteCommanderTray/RemoteCommanderTray.csproj -c Release -r win-arm64 -o publish/win-arm64
 ```
 
 每次 publish 产出单个 self-contained 的 `RemoteCommanderTray.exe`（约 60 MB）。
 不开启 trimming：WinForms 不是 trim-safe 的。
+
+## 验证范围
+
+自动化测试覆盖核心状态、回调竞态、隐私、真实父子进程退出、超时取消和隔离的启动注册表。
+真实浏览器认证、菜单使用、睡眠唤醒和 Windows 登录自启仍需要在正式发布前验收。
+切换前先停用旧启动器，本次修复不会替你切换正在使用的后台 agent。
 
 ## v0.1 不做
 

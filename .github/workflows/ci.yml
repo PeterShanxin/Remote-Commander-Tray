@@ -19,8 +19,13 @@ env:
 
 jobs:
   test:
-    name: Build and test
-    runs-on: windows-latest
+    name: Build and test (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -37,13 +42,33 @@ jobs:
       - name: Test
         run: dotnet test tests/RemoteCommanderTray.Core.Tests/RemoteCommanderTray.Core.Tests.csproj -c Release --no-build --logger "trx;LogFileName=test-results.trx"
 
+      - name: Native lifecycle integration
+        shell: pwsh
+        run: |
+          dotnet run --project tests/RemoteCommanderTray.Windows.Integration -c Release --no-build 2>&1 | Tee-Object -FilePath native-results.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
-          path: "**/TestResults/*.trx"
+          name: test-results-${{ matrix.runner }}
+          path: |
+            **/TestResults/*.trx
+            native-results.log
           if-no-files-found: ignore
+
+  test-gate:
+    name: Build and test
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require both native architectures
+        env:
+          RESULT: ${{ needs.test.result }}
+        run: test "$RESULT" = success
 
   publish:
     name: Publish ${{ matrix.rid }}

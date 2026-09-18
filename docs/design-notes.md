@@ -1,177 +1,143 @@
-# Design notes
+# Design and verification notes
 
-Background for reviewers: why the pieces are shaped the way they are, how the v0.1
-acceptance criteria are met, and what is not yet proven.
+## Scope
 
-## Shape of the code
+The tray stays a Windows-only WinForms companion, not a replacement for Desktop
+Commander. The platform-neutral Core owns parsing, state and lifecycle policy. The
+Windows adapter owns native process containment and startup registration. The UI only
+renders snapshots and routes deliberate user actions.
 
-```
-AgentOutputParser   one CLI line  ->  AgentSignal          (no state, no UI)
-AgentStateMachine   AgentSignal   ->  AgentSnapshot        (no parsing, no UI)
-AgentSupervisor     snapshots + process lifecycle          (no UI)
-TrayApplicationContext              renders snapshots      (no parsing, no rules)
-```
+No new runtime packages, browser engine, Windows service, background helper daemon or
+OAuth implementation are introduced by the review fixes.
 
-The spec asked for status logic in one simple state machine, with UI and log parsing
-kept apart. That boundary is also what makes the core project target plain `net8.0`,
-so the whole status pipeline is unit-tested on any host, including the Linux CI leg.
+## Process ownership
 
-## Status detection
+A supervisor semaphore serializes Start, Stop, Restart, Re-authenticate, and every exit
+or output callback. Each callback carries its originating process and revalidates that
+identity after acquiring the semaphore. Publishing the generation and Starting state
+before `Start()` means synchronous or very fast callbacks cannot be discarded or have
+their state overwritten. stdout and stderr have separate parsers so a partial sign-in
+prompt on one stream cannot consume unrelated output from the other.
 
-Signal strings were taken from the source of
-`@wonderwhy-er/desktop-commander@0.2.51` (`dist/remote-device/*.js`), not guessed:
+Each remote command and each one-shot logout gets a separate Job Object. The Windows
+adapter uses `PROC_THREAD_ATTRIBUTE_JOB_LIST` to put the process in its job atomically
+at creation, with breakaway disabled. `CREATE_SUSPENDED` allows streams and observation
+to be wired before executing user code. `PROC_THREAD_ATTRIBUTE_HANDLE_LIST` restricts
+inheritance to the three standard streams; the job handle is never inherited.
 
-| CLI line | Signal | Resulting state |
-| --- | --- | --- |
-| `🚀 Starting MCP Device...` | `DeviceStarting` | Starting |
-| `⏳ Connecting to Remote MCP ...` | `ConnectingToRemote` | Connecting |
-| `- ✅ Session restored` | `SessionRestored` | Connecting |
-| `🔐 Authenticating with Remote MCP server...` | `AuthenticationStarted` | Authentication required |
-| `✅ Device ready:` | `DeviceReady` | Online |
-| `🔌 Device marked as online` | `DeviceOnline` | Online |
-| `❌ Channel error: ...` | `ChannelDisrupted` | Connecting (no restart) |
-| `- ❌ Device startup failed: ...` | `StartupFailed` | Error |
+This avoids both the fast-child escape and tray-crash gap in a create-then-assign
+sequence. Failure to create the containment is fatal to that start. There is no
+`requireJobObject=false` escape hatch.
 
-Two details that matter:
+On root exit, Stop, Restart, logout completion, timeout, cancellation or disposal, the
+adapter terminates the owned job and waits for its active-process count to reach zero.
+Only then may the supervisor replace the generation. Checking `Process.HasExited` is
+not sufficient: descendants may still be alive. A failed drain blocks replacement and
+requires an explicit Stop retry. Closing the owned handle is the final kill-on-close
+backstop when the tray exits or crashes. No process-name-wide termination is used.
 
-- The device authorization flow prints its URL and its user code on the line *after*
-  their labels, so the parser carries a two-flag state for exactly that case.
-- Matching happens on a normalized line (ANSI codes, emoji, bullets and `1.` markers
-  stripped) using `StartsWith`, never `Contains`. Tool-call logging puts
-  attacker-influenced text into the same stream; a prefix match on a normalized line
-  means that text lands inside `Received tool call ...` and cannot forge a transition.
-  There is a test for exactly that.
+Output lines are capped at 16 KiB; oversized lines are omitted and parsing resumes at
+the next newline. One-shot captured output is bounded as well.
 
-## Restart policy
+References for the native boundary:
+- [Create a process directly in a job](https://devblogs.microsoft.com/oldnewthing/20230209-00/?p=107812)
+- [Process/thread attributes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute)
+- [TerminateJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject)
 
-| Event | Action |
+## Recovery and sign-in
+
+| Event | Behavior |
 | --- | --- |
-| Process exits and the agent is wanted | Restart after `5s → 15s → 30s → 60s` |
-| Process exits after a user Stop | Nothing |
-| Channel error / closed / timed out / recreating | Icon changes, process untouched |
-| Device marked offline | Icon changes, process untouched |
-| Run lasted longer than `healthyRunSeconds` | Backoff resets |
-| Reached Online | Backoff resets, failure streak cleared |
+| Unexpected process exit | Drain generation, then retry at 5/15/30/60 seconds |
+| User Stop | Drain and stay stopped |
+| Temporary channel/network failure | Update status; leave reconnect to the official CLI |
+| Terminal `Remote session expired and could not be renewed` | Latch Authentication required; notify once; wait for user sign-in |
+| Late Online after terminal session loss | Ignore it until a new generation starts |
+| Re-authenticate | Drain old agent, run official logout, then start a new agent only if logout succeeded |
+| Failed/timed-out logout | Show an error; do not silently restart with old credentials |
+| Process cleanup not confirmed | Block replacement rather than risk duplicate agents |
 
-Leaving channel problems alone is the whole reason the supervisor stays this simple:
-the official device already owns heartbeat, stale-connection detection and channel
-recreation, and restarting the process underneath it would only throw away its own
-recovery.
+Terminal session loss does not itself start an automatic browser/restart loop. The
+notification and `Sign in again...` menu action lead to the existing confirmation and
+official CLI flow. The tray never opens or edits `device.json`. Local logout is not the
+same as server-side revocation; revocation remains in the official device dashboard.
 
-`Remote session expired and could not be renewed` is the one connection-level message
-that *is* treated as an error, because the CLI itself says the process has to be
-restarted to recover. Nothing exits on that path - the CLI stops its heartbeat and stays
-alive - so the supervisor acts on the message directly: one deduplicated notification per
-generation, then a stop and a restart routed through the normal backoff, so a session that
-keeps dropping cannot become a restart loop.
+Status parsing is based on official CLI 0.2.51 output. Online is the latest status
+reported by that CLI, not an independent end-to-end proof that a ChatGPT request will
+succeed. Unknown future output cannot be treated as confirmed connectivity.
 
-## Exactly one agent
+## Ordinary logging and clipboard diagnostics
 
-Four independent guards:
+Arbitrary CLI output may contain tool results, including opaque credentials, short
+plain text or nested JSON. A recognized status prefix can also have sensitive text
+appended. Regexes alone cannot safely classify such input.
 
-1. A named mutex (`Local\RemoteCommanderTray.SingleInstance.<user>`) means one tray per
-   signed-in user.
-2. Every supervisor entry point serializes on one semaphore, and `StartCore` returns
-   early if a live process already exists - so a restart timer and a menu click cannot
-   race into two agents.
-3. Each generation carries its identity through its own callbacks. An exit callback that
-   was queued before a Restart re-checks, under the semaphore, that the process it came
-   from is still the current one; output from a replaced generation is dropped the same
-   way. Without that check, a queued exit would detach the replacement and start a third
-   agent beside it.
-4. Every generation gets **its own** `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job object with
-   breakaway disallowed, and that job is terminated when the generation ends - on Stop, on
-   Restart, and on natural exit. Killing the tree from the root is not enough: once the
-   root has exited there is no common parent left to walk, so a surviving local-MCP
-   `node.exe` can only be reached through the job. Kill-on-close remains the backstop for a
-   tray that is killed outright.
+`AgentLogPolicy` therefore emits only generated event names and omission markers. It
+never stores a raw CLI line, tool name, URI, code, error payload or `AgentSignal.Value`
+in the ordinary operational log. `SecretRedactor` is secondary protection, including
+for escaped keyed secrets, not the confidentiality guarantee.
 
-The mutex coordinates trays, and nothing else. A pre-existing scheduled task or terminal
-running `desktop-commander remote` is invisible to it, and the tray deliberately does not
-hunt for unrelated Node processes to kill. Handing over from a previous launcher is a
-documented manual step.
+`Copy diagnostics` includes structural state, version/OS, process status, counters and
+timestamps. It excludes command arguments, CLI-derived account/device fields, free-form
+errors and **all log tails**, including legacy logs from older builds.
 
-## What reaches the log
+`verboseAgentLog` is a separate, explicit sensitive-data opt-in. Its file may contain
+raw tool results and credentials; never include it automatically in a bug report. Both
+logs rotate. Existing files from older builds are not silently deleted or claimed to
+have been retroactively sanitized.
 
-The official CLI logs completed tool calls with `JSON.stringify(result)`, and the
-serialized result lands on its own line with no prefix to recognize it by. Scrubbing that
-with regexes cannot be sound over arbitrary tool output - a nested
-`\"refresh_token\":\"...\"` inside an escaped string defeats a pattern written for plain
-JSON, and opaque credentials are not JWT-shaped at all.
+## Startup and handover
 
-So `agent.log` is an allowlist, not a filter:
+The named mutex coordinates tray instances only. It cannot prevent an independent
+terminal, scheduled task or another user/session from launching the official CLI.
+Disable and stop the old launcher before adopting this tray. Do not run both supervisors
+against the same device. The tray never searches for arbitrary Node processes to kill.
 
-| Line | What is logged |
-| --- | --- |
-| Recognized CLI status line | verbatim |
-| `Received tool call ...` / `Tool call X completed:` | `tool call X` (name only, and only if it is a plain identifier) |
-| The line after `completed:` | `<tool result omitted, N chars>` |
-| Anything else | verbatim if short and free of braces, brackets and quotes; otherwise `<agent output omitted, N chars>` |
+Startup state combines the Run command with a **read-only** observation of Windows'
+StartupApproved record. Only known complete 12-byte states are interpreted. Unexpected
+formats, access errors or flags produce Unknown rather than an enabled checkmark. This
+registry format is undocumented, so this is an observation, not a promise about every
+Windows startup policy.
 
-`SecretRedactor` still runs over everything that survives, including the escaped-JSON key
-forms, but as defence in depth rather than as the guarantee. Raw output goes to
-`agent-verbose.log` only when the user sets `verboseAgentLog`, and diagnostics never reads
-that file.
+A Windows-disabled entry stays disabled when its executable path is refreshed. The UI
+opens `ms-settings:startupapps` for Windows-disabled or unknown states; it never writes
+StartupApproved to override an external user choice. No startup state is duplicated in
+settings.json.
 
-## Launching the CLI
+## Automated verification
 
-Preference order:
+Core regressions cover immediate output/exit, exit and auth callbacks already queued
+behind a restart, terminal-session notification/latching, failed logout, failed cleanup,
+creation retry, disposal and log/clipboard privacy. These are stateful boundary tests,
+not just string matching tests.
 
-1. `agentExecutable` from `settings.json`;
-2. `node.exe` plus the globally installed `dist/index.js` - no shell, no `.cmd` shim, so
-   stdio redirection and tree teardown behave predictably;
-3. `desktop-commander.cmd` through `cmd.exe /d /s /c`;
-4. `npx -y @wonderwhy-er/desktop-commander@latest`.
+`tests/RemoteCommanderTray.Windows.Integration` compiles the actual production Windows
+adapter and runs isolated synthetic executables. It checks live UTF-8 output, no console,
+environment inheritance, root-exit cleanup, Stop/Dispose, job isolation, owner crash,
+timeout/cancellation, fast exits, output bounds and disposable test registry records.
+It does not start Desktop Commander, read credentials or alter real startup settings.
 
-Windows path conventions (`\` and `;`) are hard-coded rather than taken from
-`Path.Combine`, because the paths being resolved are always Windows paths regardless of
-which host runs the tests.
+Run on Windows:
 
-## Acceptance criteria
+```powershell
+dotnet build RemoteCommanderTray.sln -c Release
+dotnet test tests/RemoteCommanderTray.Core.Tests -c Release --no-build
+dotnet run --project tests/RemoteCommanderTray.Windows.Integration -c Release --no-build
+```
 
-| # | Criterion | Where |
-| --- | --- | --- |
-| 1 | Starts at Windows sign-in | `StartupRegistration`, per-user `Run` key |
-| 2 | No console window | `CreateNoWindow` + `UseShellExecute = false`, `WinExe` output |
-| 3 | Tray always shows the real state | `AgentStateMachine` -> `TrayApplicationContext` |
-| 4 | At most one agent | Mutex, supervisor semaphore, generation identity, job object |
-| 5 | Crash recovery | `RestartBackoff` + `AgentSupervisor.ScheduleRestart` |
-| 6 | Brief network loss does not cause restarts | `ChannelDisrupted` never touches the process |
-| 7 | Expired sign-in is obvious | Key icon, balloon, sign-in menu section, session-loss recovery |
-| 8 | One-click re-authenticate | `AgentSupervisor.ReauthenticateAsync` |
-| 9 | Start / Stop / Restart | Tray menu |
-| 10 | Logs and diagnostics | `RollingFileLog`, `DiagnosticsReport` |
-| 11 | No leftover agent after Exit | Per-generation job terminated on every end; kill-on-close backstop |
-| 12 | Runs on ARM64 Windows | `win-arm64` publish leg in CI |
+CI runs .NET 8 tests and native integration on hosted x64 and ARM64 Windows, then builds
+both self-contained distributions. Local testing on the maintainer's ARM64 machine used
+.NET 9 with explicit `DOTNET_ROLL_FORWARD=Major`; the .NET 8 CI result remains a separate
+required verification, not something inferred from the local run.
 
-## Startup state is not one registry value
+## Remaining manual acceptance before a public release
 
-Turning a startup app off in Windows' Startup Apps page does not delete its `Run` value;
-Windows records the decision separately under `Explorer\StartupApproved\Run`, in a binary
-value whose first byte has bit 0 set when disabled. Treating the presence of the `Run`
-command as "enabled" shows a ticked box for something that will not launch, and rewriting
-the `Run` value does not clear the separate decision.
+Automated tests do not replace a real sign-in and desktop acceptance pass. Verify tray
+menu interactions, actual browser authorization, sleep/resume and a Windows sign-in
+cycle after a deliberate handover from the previous launcher. No such handover or real
+authorization was performed as part of this review patch.
 
-`StartupApproval` resolves the two reads into `NotRegistered` / `Enabled` /
-`DisabledByWindows`. The menu shows the effective state, and when Windows has disabled the
-entry the tray offers `ms-settings:startupapps` rather than pretending it can re-enable
-it. The user's external choice is preserved, including by the path-refresh at launch.
-
-## Known gaps
-
-- **Not yet run on Windows.** Everything compiles for `win-x64` and `win-arm64`, and the
-  102 core tests pass, but the tray UI, job object, registry entry and real process
-  launching have only been exercised by cross-compilation. Criteria 1, 2, 4, 11 and 12
-  need one manual pass on a real machine before v0.1 is called done. In particular the
-  job-per-generation teardown and the `StartupApproved` round trip (enable in the tray,
-  disable in Windows, reopen the menu, re-enable) want checking on real hardware.
-- **Stopping is a kill, not a graceful shutdown.** Without a console there is no way to
-  deliver Ctrl+C, so `StopAsync` kills the process tree. The device is marked offline
-  server-side by its own heartbeat timeout rather than by its shutdown path. Sending
-  `CTRL_BREAK_EVENT` to a process group would be tidier and needs creation flags that
-  `System.Diagnostics.Process` does not expose.
-- **The restart countdown in the menu does not tick.** It is computed when the menu
-  opens, which is the only moment it is visible.
-- **Self-contained publish is ~60 MB.** Acceptable for v0.1 per the spec. A
-  framework-dependent build would be a few hundred KB if the .NET 8 desktop runtime is
-  already present.
+Stop is a bounded job termination, not a graceful Ctrl+C. Remote presence can take time
+to expire after stopping even though local access is already cut off. The single-file
+self-contained distribution includes .NET; package size is not the tray's idle memory
+usage. No memory or long-duration soak benchmark is claimed here.

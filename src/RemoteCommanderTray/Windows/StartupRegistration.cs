@@ -40,24 +40,27 @@ internal static class StartupRegistration
 
     /// <summary>The effective state, combining the command and Windows' own decision.</summary>
     public static StartupState GetState()
+        => ReadState(Registry.CurrentUser, RunKeyPath, ApprovedKeyPath, ValueName);
+
+    // Registry paths are injectable for isolated tests without touching real autostart.
+    internal static StartupState ReadState(RegistryKey root, string runPath, string approvedPath, string name)
     {
         try
         {
-            using var runKey = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-            var hasRunValue = runKey?.GetValue(ValueName) is string value && value.Length > 0;
-
-            using var approvedKey = Registry.CurrentUser.OpenSubKey(ApprovedKeyPath, writable: false);
-            var approval = approvedKey?.GetValue(ValueName) as byte[];
-
-            return StartupApproval.Resolve(hasRunValue, approval);
+            using var runKey = root.OpenSubKey(runPath, writable: false);
+            var runValue = runKey?.GetValue(name);
+            if (runValue is not null && runValue is not string) return StartupState.Unknown;
+            var registered = runValue is string command && !string.IsNullOrWhiteSpace(command);
+            using var approvedKey = root.OpenSubKey(approvedPath, writable: false);
+            return StartupApproval.Resolve(registered, approvedKey?.GetValue(name));
         }
         catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException)
         {
-            return StartupState.NotRegistered;
+            return StartupState.Unknown;
         }
     }
 
-    /// <summary>True only when the next sign-in will actually launch the tray.</summary>
+    /// <summary>Registered and not disabled by the observed Windows record.</summary>
     public static bool IsEnabled() => GetState() == StartupState.Enabled;
 
     public static bool TrySet(bool enabled, out string? error)
@@ -106,7 +109,7 @@ internal static class StartupRegistration
     /// </remarks>
     public static void RefreshIfRegistered()
     {
-        if (GetState() != StartupState.NotRegistered)
+        if (GetState() is StartupState.Enabled or StartupState.DisabledByWindows)
         {
             TrySet(true, out _);
         }

@@ -39,6 +39,9 @@ public sealed record AgentSnapshot
     /// <summary>User code printed by the CLI while a device authorization flow is pending.</summary>
     public string? UserCode { get; init; }
 
+    /// <summary>The live process has lost authorization and requires an explicit sign-in retry.</summary>
+    public bool RequiresReauthentication { get; init; }
+
     /// <summary>Last error line worth surfacing.</summary>
     public string? LastError { get; init; }
 

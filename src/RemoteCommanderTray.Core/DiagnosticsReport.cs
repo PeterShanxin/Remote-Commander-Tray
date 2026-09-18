@@ -23,9 +23,9 @@ public readonly record struct DiagnosticsContext(
 /// Builds the text behind "Copy diagnostics".
 /// </summary>
 /// <remarks>
-/// Only tray-owned fields and values the CLI printed itself are included. No token, no
-/// <c>device.json</c> content, and every line goes through <see cref="SecretRedactor"/>
-/// before it reaches the clipboard.
+/// Copies only structural state and counters. CLI-derived free text and logs are not
+/// exported, including old log files created before the allowlisted logging policy.
+/// The optional logTail parameter is ignored for backward compatibility.
 /// </remarks>
 public static class DiagnosticsReport
 {
@@ -35,9 +35,6 @@ public static class DiagnosticsReport
         builder.AppendLine($"Tray:           {context.TrayVersion}");
         builder.AppendLine($"OS:             {context.OperatingSystem} ({context.Architecture})");
         builder.AppendLine($"State:          {snapshot.StateLabel}");
-        builder.AppendLine($"Device:         {snapshot.DeviceName ?? "(unknown)"}");
-        builder.AppendLine($"Device ID:      {snapshot.DeviceId ?? "(unknown)"}");
-        builder.AppendLine($"Account:        {snapshot.UserEmail ?? "(not signed in)"}");
         builder.AppendLine($"Agent:          {(snapshot.ProcessRunning ? "running" : "not running")}");
         builder.AppendLine($"Agent wanted:   {(snapshot.AgentWanted ? "yes" : "no")}");
         builder.AppendLine($"Last connected: {FormatTimestamp(snapshot.LastConnectedUtc)}");
@@ -45,21 +42,10 @@ public static class DiagnosticsReport
         builder.AppendLine($"Restart count:  {snapshot.RestartCount} (total {snapshot.TotalRestartCount})");
         builder.AppendLine($"Next restart:   {FormatTimestamp(snapshot.NextRestartUtc)}");
         builder.AppendLine($"Launch at sign-in: {DescribeStartup(context.LaunchAtSignIn)}");
-        builder.AppendLine($"Command:        {context.LaunchDescription}");
-        builder.AppendLine($"Log:            {context.LogPath}");
-        builder.AppendLine($"Last error:     {snapshot.LastError ?? "(none)"}");
+        builder.AppendLine($"Re-authentication required: {snapshot.RequiresReauthentication}");
+        builder.AppendLine($"Error present:  {!string.IsNullOrWhiteSpace(snapshot.LastError)}");
         builder.AppendLine();
-        builder.AppendLine("No access token, refresh token or device.json content is included.");
-
-        if (logTail is { Count: > 0 })
-        {
-            builder.AppendLine();
-            builder.AppendLine($"--- last {logTail.Count} log lines ---");
-            foreach (var line in logTail)
-            {
-                builder.AppendLine(line);
-            }
-        }
+        builder.AppendLine("Operational summary only. CLI text, credentials, account details, command arguments and log tails are excluded.");
 
         return SecretRedactor.Redact(builder.ToString());
     }

@@ -3,7 +3,7 @@
 A very small Windows system-tray companion that runs and supervises the official
 [Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) Remote Device.
 
-It does not reimplement Desktop Commander, and it never touches your sign-in tokens.
+It does not reimplement Desktop Commander or manage its credential store.
 It owns exactly two things: the Windows user experience, and the lifecycle of one
 `desktop-commander remote` process.
 
@@ -12,12 +12,12 @@ It owns exactly two things: the Windows user experience, and the lifecycle of on
 ## What it does
 
 - Starts the Remote Device when you sign in to Windows, with no console window.
-- Shows the real connection status in the notification area, at a glance.
+- Shows the latest CLI-reported connection status in the notification area, at a glance.
 - Restarts the agent automatically if it crashes, with a `5s → 15s → 30s → 60s` backoff.
 - Leaves the agent alone during ordinary network blips, because the official device
   already handles heartbeats, stale connections and channel recreation itself.
 - Tells you clearly when sign-in has expired, and re-authenticates in one click.
-- Guarantees at most one agent, and no leftover agent after Exit.
+- Owns at most one managed agent generation, and drains its descendants on Stop or Exit.
 
 ## Requirements
 
@@ -56,8 +56,8 @@ otherwise two supervisors will run the same device. The tray will not go looking
 other Node processes to kill.
 
 If **Launch at sign-in** shows "(turned off in Windows)", Windows has disabled the entry
-from its own Startup Apps page. Only Windows can turn it back on; clicking the item opens
-that page.
+from its own Startup Apps page. Use that page to re-enable it. Unknown startup states
+also direct you to Windows settings.
 
 ## Tray states
 
@@ -68,7 +68,7 @@ relying on colour alone.
 | --- | --- | --- |
 | Check | Online | Device registered and marked online |
 | Dots | Connecting / Reconnecting | Starting up, or re-establishing a dropped channel |
-| Key | Authentication required | The official CLI is waiting for you to sign in |
+| Key | Authentication required | Sign-in is pending, or an expired session needs Sign in again |
 | Cross | Offline / Error | The agent failed, exited, or has been stuck for too long |
 | Pause | Stopped | You stopped the agent |
 
@@ -114,10 +114,13 @@ Ordinary reconnects are silent.
 
 **Re-authenticate...** does exactly four things:
 
-1. stops the child process;
+1. stops the entire owned process generation;
 2. runs the official `desktop-commander remote --logout`;
-3. starts `desktop-commander remote` again;
+3. starts `desktop-commander remote` again only if logout succeeded;
 4. shows the sign-in page and code that the official CLI prints.
+
+An expired running session produces one notification and a **Sign in again...** action;
+it does not open browsers repeatedly. A failed logout leaves the agent stopped.
 
 The tray never reads, writes, copies or parses `device.json`, and never implements any
 part of the OAuth flow.
@@ -132,22 +135,21 @@ logs\agent.log            (rotated at 1 MB, 3 files kept)
 logs\agent-verbose.log    (only when verboseAgentLog is on)
 ```
 
-`agent.log` holds the tray's own messages and the CLI's status lines. It deliberately
-does **not** hold tool-call arguments or results: the official CLI logs completed tool
-calls with `JSON.stringify`, so a single `read_file` of a credentials file would
-otherwise land in the log and, through "Copy diagnostics", on the clipboard. Those lines
-are reduced to `tool call <name>` and `<tool result omitted, N chars>`.
+`agent.log` contains tray lifecycle messages plus generated operational event names,
+not raw CLI lines. Tool parameters, results, names and unrecognized text are omitted,
+including short plain text and nested escaped JSON. Regex redaction is defense in depth,
+not a guarantee over arbitrary tool output.
 
-Setting `verboseAgentLog` writes the raw output to a second file instead. That file can
-contain whatever a remote tool call read, diagnostics never touches it, and turning it on
-is an explicit choice to keep such a file.
+`verboseAgentLog` opts into a separate sensitive debug log. It can contain credentials
+and anything a remote tool read. Never share it without inspecting it. Diagnostics never
+includes that file, and older existing logs are not retroactively sanitized.
 
 ### settings.json
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `startAgentOnLaunch` | `true` | Start the agent when the tray starts |
-| `agentExecutable` | `null` | Override the auto-detected CLI path |
+| `agentExecutable` | `null` | Override with an absolute CLI executable path |
 | `agentArguments` | `null` | Arguments inserted before `remote` |
 | `remoteMcpUrl` | `https://mcp.desktopcommander.app` | Opened by "Open Remote MCP" |
 | `stalledConnectionMinutes` | `5` | How long a stuck reconnect runs before you are told |
@@ -157,12 +159,11 @@ is an explicit choice to keep such a file.
 | `logRetainedFiles` | `3` | How many rotated logs to keep |
 | `notificationsEnabled` | `true` | Desktop notifications on or off |
 | `verboseAgentLog` | `false` | Also write raw agent output to `logs/agent-verbose.log` |
-| `requireJobObject` | `true` | Refuse to start an agent that cannot be placed in a job object |
 
-"Launch at sign-in" is deliberately *not* here. Its single source of truth is the
-per-user registry value `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\RemoteCommanderTray`,
-so toggling it from Windows' own Startup Apps page cannot drift from a copy kept in a
-file.
+"Launch at sign-in" is not duplicated in settings.json. It reads the Run registration
+and Windows' separate StartupApproved decision. A disabled entry stays disabled; an
+unrecognized or unreadable state is shown as unknown. Re-enable through Windows Startup
+Apps, not by overwriting its approval record. Process containment is always required.
 
 ### Copy diagnostics
 
@@ -172,23 +173,21 @@ Produces something like:
 Tray:           0.1.0
 OS:             Microsoft Windows NT 10.0.26100.0 (Arm64)
 State:          Online
-Device:         YOURMACHINE
 Agent:          running
 Last connected: 2026-01-01 13:52:04
 Restart count:  0 (total 0)
 ...
 ```
 
-It also appends the last 25 lines of `agent.log`, which is what makes a bug report
-useful. Those lines are already free of tool payloads by construction (see above), and
-everything passes through a redactor on the way out as a second line of defence.
-`agent-verbose.log` is never included.
+Only a structural operational summary is copied. Command arguments, account/device
+fields printed by the CLI, free-form errors and all log tails are excluded, even when
+an older build left sensitive text in an existing log.
 
 ## Security boundaries
 
 The tray:
 
-- does not parse, store or copy tokens;
+- does not read the credential store or implement token persistence;
 - does not read or write `device.json`;
 - does not implement OAuth;
 - does not implement the Remote MCP protocol;
@@ -198,14 +197,17 @@ The official Desktop Commander keeps authentication, device identity, the Remote
 connection, MCP command execution and all credentials. The tray only reads the CLI's
 own stdout and stderr to work out what to draw.
 
-Agent output is treated as untrusted input: status lines are matched by prefix on a
-normalized line, so a logged tool call carrying arbitrary text cannot forge a state
-change.
+Agent output is treated as untrusted input. Known tool-log envelopes are recognized
+before normalized status prefixes. This is a compatibility parser, not a structured
+status protocol. Ordinary logging and diagnostics exclude payloads; explicitly enabled
+verbose logging may retain sensitive tool output as described above.
 
 ## Building from source
 
 ```powershell
 dotnet test RemoteCommanderTray.sln
+# Windows only: real process-tree and isolated startup-registry checks
+dotnet run --project tests/RemoteCommanderTray.Windows.Integration -c Release
 dotnet publish src/RemoteCommanderTray/RemoteCommanderTray.csproj -c Release -r win-x64   -o publish/win-x64
 dotnet publish src/RemoteCommanderTray/RemoteCommanderTray.csproj -c Release -r win-arm64 -o publish/win-arm64
 ```
@@ -223,7 +225,9 @@ platform-neutral core.
 | --- | --- | --- |
 | `src/RemoteCommanderTray.Core` | `net8.0` | Log parsing, state machine, supervisor, settings, logging, diagnostics |
 | `src/RemoteCommanderTray` | `net8.0-windows` | WinForms tray UI, real process launching, job object, registry startup |
-| `tests/RemoteCommanderTray.Core.Tests` | `net8.0` | 76 tests over the core |
+| `tests/RemoteCommanderTray.Core.Tests` | `net8.0` | Core and lifecycle/privacy regression tests |
+
+| `tests/RemoteCommanderTray.Windows.Integration` | `net8.0` | Native process-tree and isolated registry integration checks |
 
 The split is the point: status parsing and state rules are portable and unit-tested,
 and the Windows-only code stays thin.

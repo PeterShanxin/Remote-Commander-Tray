@@ -79,7 +79,7 @@ public class DiagnosticsReportTests
 
         Assert.Contains("Tray:           0.1.0", report);
         Assert.Contains("State:          Online", report);
-        Assert.Contains("Device:         SHANXINMEOWPEOW", report);
+        Assert.DoesNotContain("SHANXINMEOWPEOW", report);
         Assert.Contains("Agent:          running", report);
         Assert.Contains("Restart count:  0", report);
     }

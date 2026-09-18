@@ -71,6 +71,7 @@ public class AgentLifecycleRegressionTests : IDisposable
         ];
 
         await _supervisor.StartAsync();
+        await WaitUntil(() => _supervisor.Snapshot.DeviceName is not null);
 
         Assert.Equal(AgentState.Online, _supervisor.Snapshot.State);
         Assert.Equal("SHANXINMEOWPEOW", _supervisor.Snapshot.DeviceName);
@@ -113,7 +114,7 @@ public class AgentLifecycleRegressionTests : IDisposable
     }
 
     [Fact]
-    public async Task A_lost_remote_session_notifies_and_restarts_even_though_nothing_exited()
+    public async Task A_lost_remote_session_notifies_and_waits_for_explicit_sign_in()
     {
         await _supervisor.StartAsync();
         var agent = _factory.Latest;
@@ -124,10 +125,10 @@ public class AgentLifecycleRegressionTests : IDisposable
         // exit to recover from, so the tray has to act on the message itself.
         agent.Emit("\n\u26A0\uFE0F  Remote session expired and could not be renewed.");
 
-        await WaitUntil(() => _factory.CreatedCount >= 2);
-
-        Assert.Contains(_notifications, n => n.Kind == NotificationKind.SessionExpired);
-        Assert.True(agent.StopRequested);
+        Assert.Contains(_notifications, n => n.Kind == NotificationKind.AuthenticationRequired);
+        Assert.True(_supervisor.Snapshot.RequiresReauthentication);
+        Assert.False(agent.StopRequested);
+        Assert.Equal(1, _factory.CreatedCount);
     }
 
     [Fact]
@@ -142,7 +143,7 @@ public class AgentLifecycleRegressionTests : IDisposable
 
         await Task.Delay(150);
 
-        Assert.Single(_notifications, n => n.Kind == NotificationKind.SessionExpired);
+        Assert.Single(_notifications, n => n.Kind == NotificationKind.AuthenticationRequired);
     }
 
     [Fact]
@@ -161,19 +162,19 @@ public class AgentLifecycleRegressionTests : IDisposable
 
         Assert.DoesNotContain("opaque_secret_value_1234", logged);
         Assert.DoesNotContain("C:\\secrets.json", logged);
-        Assert.Contains("tool call read_file", logged);
+        Assert.Contains("Tool call observed", logged);
         Assert.Contains("tool result omitted", logged);
     }
 
     [Fact]
-    public async Task Status_lines_are_still_logged_verbatim()
+    public async Task Status_lines_are_logged_as_operational_events()
     {
         await _supervisor.StartAsync();
         _factory.Latest.Emit("\u23F3 Connecting to Remote MCP https://mcp.desktopcommander.app");
 
         Assert.Contains(
             _log.Tail(50),
-            line => line.Contains("Connecting to Remote MCP", StringComparison.Ordinal));
+            line => line.Contains("Agent status: ConnectingToRemote.", StringComparison.Ordinal));
     }
 
     private static async Task WaitUntil(Func<bool> condition, int timeoutMs = 3000)
@@ -212,12 +213,12 @@ public class AgentLifecycleRegressionTests : IDisposable
 public class AgentLogPolicyTests
 {
     [Fact]
-    public void Keeps_a_recognized_status_line()
+    public void Records_recognized_status_without_arbitrary_text()
     {
         const string line = "\u2705 Device ready:";
         var signal = new AgentOutputParser().Parse(line);
 
-        Assert.Equal(line, AgentLogPolicy.Sanitize(line, signal));
+        Assert.DoesNotContain(line, AgentLogPolicy.Sanitize(line, signal));
     }
 
     [Fact]
@@ -226,7 +227,7 @@ public class AgentLogPolicyTests
         const string line = "\U0001F527 Received tool call 7: read_file {\"path\":\"C:\\\\secrets\"} metadata: {}";
         var signal = new AgentOutputParser().Parse(line);
 
-        Assert.Equal("tool call read_file", AgentLogPolicy.Sanitize(line, signal));
+        Assert.Equal("Tool call observed (name and payload omitted).", AgentLogPolicy.Sanitize(line, signal));
     }
 
     [Fact]
@@ -235,7 +236,7 @@ public class AgentLogPolicyTests
         const string line = "\U0001F527 Received tool call 7: \"injected text\" {} metadata: {}";
         var signal = new AgentOutputParser().Parse(line);
 
-        Assert.Equal("tool call unknown", AgentLogPolicy.Sanitize(line, signal));
+        Assert.Equal("Tool call observed (name and payload omitted).", AgentLogPolicy.Sanitize(line, signal));
     }
 
     [Fact]
@@ -244,24 +245,24 @@ public class AgentLogPolicyTests
         const string line = "{\"content\":\"anything at all\"}";
         var signal = new AgentOutputParser().Parse(line);
 
-        Assert.StartsWith("<agent output omitted", AgentLogPolicy.Sanitize(line, signal));
+        Assert.StartsWith("<unrecognized agent output omitted", AgentLogPolicy.Sanitize(line, signal));
     }
 
     [Fact]
-    public void Keeps_a_plain_unrecognized_message()
+    public void Drops_even_short_plain_unrecognized_messages()
     {
         const string line = "Failed to mark device offline: network unreachable";
         var signal = new AgentOutputParser().Parse(line);
 
-        Assert.Equal(line, AgentLogPolicy.Sanitize(line, signal));
+        Assert.DoesNotContain(line, AgentLogPolicy.Sanitize(line, signal));
     }
 
     [Fact]
     public void Drops_an_over_long_unrecognized_line()
     {
-        var line = new string('x', AgentLogPolicy.MaxUnrecognizedLength + 1);
+        var line = new string('x', 4096);
 
-        Assert.StartsWith("<agent output omitted", AgentLogPolicy.Sanitize(line, AgentSignal.None));
+        Assert.StartsWith("<unrecognized agent output omitted", AgentLogPolicy.Sanitize(line, AgentSignal.None));
     }
 }
 
@@ -301,7 +302,7 @@ public class StartupApprovalTests
     public void Windows_records_an_enabled_entry_with_bit_zero_clear(byte first)
         => Assert.Equal(
             StartupState.Enabled,
-            StartupApproval.Resolve(true, [first, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+            StartupApproval.Resolve(true, new byte[] { first, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }));
 
     [Theory]
     [InlineData(0x03)]
@@ -309,7 +310,7 @@ public class StartupApprovalTests
     public void Windows_records_a_disabled_entry_with_bit_zero_set(byte first)
         => Assert.Equal(
             StartupState.DisabledByWindows,
-            StartupApproval.Resolve(true, [first, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]));
+            StartupApproval.Resolve(true, new byte[] { first, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 }));
 
     [Fact]
     public void An_empty_record_is_not_treated_as_disabled()

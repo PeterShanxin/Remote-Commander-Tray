@@ -1,54 +1,35 @@
 namespace RemoteCommanderTray.Core;
 
-/// <summary>What "Launch at sign-in" actually amounts to right now.</summary>
+/// <summary>Observed startup registration, not a guarantee that Windows will launch it.</summary>
 public enum StartupState
 {
-    /// <summary>No <c>Run</c> entry exists.</summary>
     NotRegistered,
-
-    /// <summary>A <c>Run</c> entry exists and Windows will act on it.</summary>
     Enabled,
-
-    /// <summary>
-    /// A <c>Run</c> entry exists but the user switched it off in Windows' own Startup Apps
-    /// page, so it will not launch.
-    /// </summary>
     DisabledByWindows,
+    Unknown,
 }
 
-/// <summary>
-/// Reads the flag Windows keeps alongside a <c>Run</c> entry when the user disables it.
-/// </summary>
+/// <summary>Read-only interpretation of Windows StartupApproved observations.</summary>
 /// <remarks>
-/// Turning a startup app off in Settings or Task Manager does not delete its <c>Run</c>
-/// value. Windows records the decision separately, under
-/// <c>Explorer\StartupApproved\Run</c>, as a binary value whose first byte carries the
-/// state: bit 0 set means disabled. Treating the presence of the <c>Run</c> value as proof
-/// that the app will start is how a tray ends up showing a ticked "Launch at sign-in" for
-/// something Windows has switched off - and rewriting the <c>Run</c> value does not clear
-/// that separate decision.
+/// This registry format is not a public Windows contract. Only observed full records
+/// are classified; missing permission, malformed data or new flags must stay Unknown.
+/// Never write StartupApproved: Windows Startup Apps owns the user's decision.
 /// </remarks>
 public static class StartupApproval
 {
-    /// <summary>
-    /// Interprets a <c>StartupApproved</c> value.
-    /// </summary>
-    /// <param name="approvalValue">
-    /// The raw bytes, or null when Windows has no record - which means "not disabled".
-    /// </param>
-    public static bool IsDisabledByWindows(byte[]? approvalValue)
-        => approvalValue is { Length: > 0 } && (approvalValue[0] & 0x01) != 0;
+    public static bool IsDisabledByWindows(byte[]? value)
+        => Resolve(true, value) == StartupState.DisabledByWindows;
 
-    /// <summary>Combines the two registry reads into one answer.</summary>
-    /// <param name="hasRunValue">Whether the <c>Run</c> value exists.</param>
-    /// <param name="approvalValue">The <c>StartupApproved\Run</c> value, if any.</param>
-    public static StartupState Resolve(bool hasRunValue, byte[]? approvalValue)
+    public static StartupState Resolve(bool hasRunValue, object? approvalValue)
     {
-        if (!hasRunValue)
+        if (!hasRunValue) return StartupState.NotRegistered;
+        if (approvalValue is null) return StartupState.Enabled;
+        if (approvalValue is not byte[] { Length: 12 } bytes) return StartupState.Unknown;
+        return BitConverter.ToUInt32(bytes, 0) switch
         {
-            return StartupState.NotRegistered;
-        }
-
-        return IsDisabledByWindows(approvalValue) ? StartupState.DisabledByWindows : StartupState.Enabled;
+            2 or 6 => StartupState.Enabled,
+            3 or 7 => StartupState.DisabledByWindows,
+            _ => StartupState.Unknown,
+        };
     }
 }

@@ -172,14 +172,14 @@ public class AgentStateMachineTests
     }
 
     [Fact]
-    public void An_expired_session_is_an_error_worth_restarting_for()
+    public void An_expired_session_requires_explicit_reauthentication()
     {
         var machine = NewMachine();
         machine.OnProcessStarted();
         machine.Apply(new AgentSignal(AgentSignalKind.DeviceReady));
         machine.Apply(new AgentSignal(AgentSignalKind.SessionExpired, "Remote session expired"));
 
-        Assert.Equal(AgentState.Error, machine.Snapshot.State);
+        Assert.Equal(AgentState.AuthenticationRequired, machine.Snapshot.State);
     }
 
     [Fact]

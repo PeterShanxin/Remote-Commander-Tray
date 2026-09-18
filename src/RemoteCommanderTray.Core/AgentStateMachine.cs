@@ -54,6 +54,7 @@ public sealed class AgentStateMachine
                 VerificationUri = null,
                 UserCode = null,
                 NextRestartUtc = null,
+                RequiresReauthentication = false,
             },
             AgentState.Starting));
     }
@@ -69,6 +70,8 @@ public sealed class AgentStateMachine
             var next = s with
             {
                 ProcessRunning = false,
+                RequiresReauthentication = false,
+                NextRestartUtc = null,
                 VerificationUri = null,
                 UserCode = null,
             };
@@ -101,10 +104,15 @@ public sealed class AgentStateMachine
     /// The remote session was lost while the process stayed alive, and the tray is about
     /// to restart it. Distinct from an exit so the menu can say what actually happened.
     /// </summary>
-    public void OnSessionLost(string reason)
-        => Update(s => Transition(
-            s with { ProcessRunning = false, VerificationUri = null, UserCode = null, LastError = reason },
-            AgentState.Error));
+    public void OnOperationFailed(string reason, bool processRunning)
+        => Update(s => Transition(s with
+        {
+            ProcessRunning = processRunning,
+            VerificationUri = null,
+            UserCode = null,
+            LastError = reason,
+            NextRestartUtc = null,
+        }, AgentState.Error));
 
     /// <summary>Counts a completed restart for diagnostics.</summary>
     public void OnRestartPerformed()
@@ -123,6 +131,10 @@ public sealed class AgentStateMachine
 
     private AgentSnapshot Apply(AgentSnapshot s, AgentSignal signal)
     {
+        // Session loss is terminal for this generation. Late heartbeat/output must
+        // not make it look usable again; only a new process clears this latch.
+        if (s.RequiresReauthentication) return s;
+
         switch (signal.Kind)
         {
             case AgentSignalKind.DeviceStarting:
@@ -157,12 +169,18 @@ public sealed class AgentStateMachine
 
             case AgentSignalKind.SessionInvalid:
                 // Printed just before the CLI falls back to a fresh authorization flow.
-                return s with { LastError = NullIfBlank(signal.Value) };
+                return s with { LastError = "Remote connection needs attention." };
 
             case AgentSignalKind.SessionExpired:
-                return Transition(
-                    s with { LastError = NullIfBlank(signal.Value) ?? "Remote session expired." },
-                    AgentState.Error);
+                _deviceReadySeen = false;
+                return Transition(s with
+                {
+                    LastError = "Remote session expired; sign in again.",
+                    VerificationUri = null,
+                    UserCode = null,
+                    RequiresReauthentication = true,
+                    NextRestartUtc = null,
+                }, AgentState.AuthenticationRequired);
 
             case AgentSignalKind.DeviceReady:
                 _deviceReadySeen = true;
@@ -189,12 +207,12 @@ public sealed class AgentStateMachine
                 // The official device owns heartbeat and channel recovery, so a blip is
                 // a status change for the icon, never a reason to restart the process.
                 return s.State == AgentState.Online
-                    ? Transition(s with { LastError = NullIfBlank(signal.Value) }, AgentState.Connecting)
+                    ? Transition(s with { LastError = "Remote connection needs attention." }, AgentState.Connecting)
                     : s;
 
             case AgentSignalKind.StartupFailed:
                 return Transition(
-                    s with { LastError = NullIfBlank(signal.Value) ?? "Device startup failed." },
+                    s with { LastError = "Device startup failed." },
                     AgentState.Error);
 
             case AgentSignalKind.ShuttingDown:

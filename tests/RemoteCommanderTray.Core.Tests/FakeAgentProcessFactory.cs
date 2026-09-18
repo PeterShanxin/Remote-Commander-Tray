@@ -57,8 +57,11 @@ internal sealed class FakeAgentProcess : IAgentProcess
         }
     }
 
+    public Exception? StopFailure { get; set; }
+
     public Task StopAsync(TimeSpan gracePeriod, CancellationToken cancellationToken = default)
     {
+        if (StopFailure is not null) return Task.FromException(StopFailure);
         StopRequested = true;
         Volatile.Write(ref _exited, 1);
         return Task.CompletedTask;
@@ -90,6 +93,8 @@ internal sealed class FakeAgentProcessFactory : IAgentProcessFactory
     private readonly ConcurrentQueue<FakeAgentProcess> _created = new();
 
     public Exception? NextStartFailure { get; set; }
+    public Exception? CreateFailure { get; set; }
+    public Exception? LogoutFailure { get; set; }
 
     /// <summary>Applied to the next process created.</summary>
     public IReadOnlyList<string> NextOutputDuringStart { get; set; } = [];
@@ -109,6 +114,7 @@ internal sealed class FakeAgentProcessFactory : IAgentProcessFactory
 
     public IAgentProcess Create(AgentLaunchSpec spec)
     {
+        if (CreateFailure is not null) throw CreateFailure;
         var process = new FakeAgentProcess(spec)
         {
             StartFailure = NextStartFailure,
@@ -131,6 +137,7 @@ internal sealed class FakeAgentProcessFactory : IAgentProcessFactory
         CancellationToken cancellationToken = default)
     {
         OneShotCommands.Add(spec);
+        if (LogoutFailure is not null) return Task.FromException<AgentCommandResult>(LogoutFailure);
         return Task.FromResult(LogoutResult);
     }
 }

@@ -23,6 +23,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
 
     private readonly AgentStateMachine _machine;
     private readonly AgentOutputParser _parser = new();
+    private readonly AgentOutputParser _errorParser = new();
     private readonly IAgentProcessFactory _factory;
     private readonly AgentCommandResolver _resolver;
     private readonly Func<TraySettings> _settings;
@@ -30,6 +31,8 @@ public sealed class AgentSupervisor : IAsyncDisposable
     private readonly RollingFileLog? _verboseLog;
     private readonly RestartBackoff _backoff;
     private readonly SemaphoreSlim _mutex = new(1, 1);
+    private readonly object _disposeGate = new();
+    private Task? _disposeTask;
     private readonly Func<DateTimeOffset> _clock;
     private readonly Timer _healthTimer;
 
@@ -37,13 +40,14 @@ public sealed class AgentSupervisor : IAsyncDisposable
     private volatile IAgentProcess? _process;
     private CancellationTokenSource? _restartCts;
     private bool _agentWanted;
-    private bool _disposed;
+    private volatile bool _disposed;
     private DateTimeOffset _runStartedUtc;
     private int _consecutiveFailures;
     private bool _stallNotified;
     private bool _startFailureNotified;
     private bool _authNotified;
     private bool _sessionLossHandled;
+    private bool _acceptOutput;
     private string _launchDescription = "(not resolved)";
 
     public AgentSupervisor(
@@ -100,6 +104,9 @@ public sealed class AgentSupervisor : IAsyncDisposable
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_process is not null && !_acceptOutput)
+                throw new InvalidOperationException("Retry Stop before starting a new generation.");
             _agentWanted = true;
             _machine.SetAgentWanted(true);
             _backoff.Reset();
@@ -119,6 +126,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             _agentWanted = false;
             _machine.SetAgentWanted(false);
             CancelPendingRestart();
@@ -138,6 +146,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             _log.Write(LogSource.Tray, "Restarting agent (user request).");
             _agentWanted = true;
             _machine.SetAgentWanted(true);
@@ -169,11 +178,13 @@ public sealed class AgentSupervisor : IAsyncDisposable
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             _log.Write(LogSource.Tray, "Re-authentication requested.");
             _agentWanted = true;
             _machine.SetAgentWanted(true);
             CancelPendingRestart();
             await StopCoreAsync().ConfigureAwait(false);
+            _machine.OnProcessExited(null, userRequested: true);
 
             var settings = _settings();
             var resolution = _resolver.Resolve(AgentCommand.Logout, settings);
@@ -183,10 +194,17 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 return;
             }
 
-            _log.Write(LogSource.Tray, $"Running logout: {resolution.Spec.Description}");
-            var result = await _factory
-                .RunOnceAsync(resolution.Spec, TimeSpan.FromSeconds(30))
-                .ConfigureAwait(false);
+            _log.Write(LogSource.Tray, "Running official logout command.");
+            AgentCommandResult result;
+            try
+            {
+                result = await _factory.RunOnceAsync(resolution.Spec, TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _log.Write(LogSource.Tray, $"Official logout command failed ({ex.GetType().Name}).");
+                result = new AgentCommandResult(null, string.Empty);
+            }
 
             var logoutParser = new AgentOutputParser();
             foreach (var line in SplitLines(result.Output))
@@ -195,17 +213,25 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 _verboseLog?.Write(LogSource.Agent, line);
             }
 
-            _log.Write(
-                LogSource.Tray,
-                result.Succeeded
-                    ? "Logout completed; saved credentials removed by the official CLI."
-                    : $"Logout exited with code {result.ExitCode?.ToString() ?? "n/a"}; starting the agent anyway.");
+            if (!result.Succeeded)
+            {
+                _agentWanted = false;
+                _machine.SetAgentWanted(false);
+                _machine.OnOperationFailed("Official logout failed; sign-in was not restarted.", false);
+                _log.Write(LogSource.Tray, "Official logout failed; no replacement was started.");
+                Raise(new TrayNotification(NotificationKind.StartFailure,
+                    "Remote Commander - sign-out failed",
+                    "The official CLI could not clear its credentials. Retry Re-authenticate; no replacement agent was started."));
+                return;
+            }
+
+            _log.Write(LogSource.Tray, "Official logout completed.");
 
             _backoff.Reset();
             _consecutiveFailures = 0;
             _startFailureNotified = false;
-            _authNotified = true;
             StartCore();
+            _authNotified = true;
 
             Raise(new TrayNotification(
                 NotificationKind.ReauthenticationStarted,
@@ -241,15 +267,43 @@ public sealed class AgentSupervisor : IAsyncDisposable
 
         _launchDescription = resolution.Spec.Description;
         _parser.Reset();
+        _errorParser.Reset();
         _sessionLossHandled = false;
+        _authNotified = false;
 
-        var process = _factory.Create(resolution.Spec);
+        // A user start can overtake a queued exit callback. Drain the old generation
+        // before publishing a replacement, even when its root has already exited.
+        if (_process is { } previous)
+        {
+            previous.OutputReceived -= HandleOutput;
+            previous.Exited -= HandleExited;
+            _acceptOutput = false;
+            try { previous.Dispose(); }
+            catch (Exception ex) { BlockReplacement(ex); return; }
+            _process = null;
+        }
+
+        IAgentProcess process;
+        try
+        {
+            process = _factory.Create(resolution.Spec);
+        }
+        catch (Exception ex)
+        {
+            _log.Write(LogSource.Tray, $"Agent creation failed ({ex.GetType().Name}).");
+            _machine.OnProcessExited(null, userRequested: false);
+            _consecutiveFailures++;
+            NotifyStartFailureIfNeeded("Could not create the supervised process.");
+            ScheduleRestart();
+            return;
+        }
 
         // The generation and its state are published *before* Start, because the real
         // process begins raising exit and output events from inside Start. Registering
         // afterwards lost an immediate exit for good, and let a late "Starting" overwrite
         // an Online that early output had already established.
         _process = process;
+        _acceptOutput = true;
         _runStartedUtc = _clock();
         _stallNotified = false;
         _machine.OnProcessStarted();
@@ -265,121 +319,91 @@ public sealed class AgentSupervisor : IAsyncDisposable
         {
             process.OutputReceived -= HandleOutput;
             process.Exited -= HandleExited;
-            if (ReferenceEquals(_process, process))
-            {
-                _process = null;
-            }
-
-            process.Dispose();
-            _log.Write(LogSource.Tray, $"Failed to launch agent: {ex.Message}");
+            _acceptOutput = false;
+            try { process.Dispose(); }
+            catch (Exception cleanupError) { BlockReplacement(cleanupError); return; }
+            _process = null;
+            _log.Write(LogSource.Tray, $"Failed to launch agent ({ex.GetType().Name}).");
             _machine.OnProcessExited(null, userRequested: false);
             _consecutiveFailures++;
-            NotifyStartFailureIfNeeded(ex.Message);
+            NotifyStartFailureIfNeeded("Could not launch the supervised process.");
             ScheduleRestart();
             return;
         }
 
         _log.Write(
             LogSource.Tray,
-            $"Agent started (pid {process.ProcessId?.ToString() ?? "?"}): {resolution.Spec.Description}");
+            $"Agent started (pid {process.ProcessId?.ToString() ?? "?"}).");
+    }
+
+    private void BlockReplacement(Exception error)
+    {
+        _agentWanted = false;
+        _machine.SetAgentWanted(false);
+        CancelPendingRestart();
+        _machine.OnOperationFailed("Agent cleanup failed. Retry Stop before restarting.", true);
+        _log.Write(LogSource.Tray, $"Replacement blocked after cleanup failure ({error.GetType().Name}).");
+        Raise(new TrayNotification(NotificationKind.StartFailure, "Remote Commander - cleanup failed",
+            "Retry Stop before restarting the agent."));
     }
 
     private async Task StopCoreAsync()
     {
         var process = _process;
-        if (process is null)
-        {
-            return;
-        }
-
-        _process = null;
+        if (process is null) return;
+        _acceptOutput = false;
         process.OutputReceived -= HandleOutput;
         process.Exited -= HandleExited;
-
         try
         {
+            // Stop must drain the whole generation, not just wait for the root.
             await process.StopAsync(StopGracePeriod).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            _log.Write(LogSource.Tray, $"Error while stopping agent: {ex.Message}");
-        }
-        finally
-        {
             process.Dispose();
+            _process = null;
+        }
+        catch
+        {
+            // Keep ownership so a later Stop can retry. Never start a replacement
+            // while termination is unconfirmed.
+            _agentWanted = false;
+            _machine.SetAgentWanted(false);
+            CancelPendingRestart();
+            _machine.OnOperationFailed("Agent cleanup failed. Retry Stop before restarting.", true);
+            throw;
         }
     }
 
     private void HandleOutput(object? sender, AgentOutputLine line)
     {
-        if (!ReferenceEquals(sender, _process))
-        {
-            // Output from a generation we have already replaced. Acting on it would let a
-            // dying agent drive the icon for the one that succeeded it.
-            return;
-        }
-
-        var signal = _parser.Parse(line.Text);
-        var source = line.IsError ? LogSource.AgentError : LogSource.Agent;
-
-        _log.Write(source, AgentLogPolicy.Sanitize(line.Text, signal));
-        _verboseLog?.Write(source, line.Text);
-
-        _machine.Apply(signal);
-
-        if (signal.Kind == AgentSignalKind.SessionExpired)
-        {
-            HandleSessionLoss();
-        }
+        if (sender is IAgentProcess source && !_disposed)
+            _ = OnOutputAsync(source, line);
     }
 
-    /// <summary>
-    /// The official device prints "Remote session expired and could not be renewed",
-    /// stops its heartbeat, and then stays alive telling the user to restart it. Nothing
-    /// exits, so nothing else here would ever notice.
-    /// </summary>
-    private void HandleSessionLoss()
-    {
-        if (_sessionLossHandled)
-        {
-            // Once per generation: the CLI can print this more than once.
-            return;
-        }
-
-        _sessionLossHandled = true;
-        _log.Write(LogSource.Tray, "Remote session expired; restarting the agent to recover.");
-        Raise(new TrayNotification(
-            NotificationKind.SessionExpired,
-            "Remote Commander - session expired",
-            "Desktop Commander lost its Remote MCP session and is being restarted. "
-            + "If this keeps happening, use Re-authenticate to sign in again."));
-
-        _ = Task.Run(RecoverFromSessionLossAsync);
-    }
-
-    private async Task RecoverFromSessionLossAsync()
+    private async Task OnOutputAsync(IAgentProcess source, AgentOutputLine line)
     {
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_disposed || !_agentWanted)
+            // Parsing, generation validation and state changes use the lifecycle lock.
+            // An old callback cannot resume inside a replacement's parser/state.
+            if (_disposed || !_acceptOutput || !ReferenceEquals(source, _process)) return;
+            var parser = line.IsError ? _errorParser : _parser;
+            var signal = parser.Parse(line.Text);
+            var logSource = line.IsError ? LogSource.AgentError : LogSource.Agent;
+            _log.Write(logSource, AgentLogPolicy.Sanitize(line.Text, signal));
+            _verboseLog?.Write(logSource, line.Text);
+            if (signal.Kind == AgentSignalKind.SessionExpired && !_sessionLossHandled)
             {
-                return;
+                _sessionLossHandled = true;
+                _authNotified = false;
             }
-
-            CancelPendingRestart();
-            await StopCoreAsync().ConfigureAwait(false);
-            _machine.OnSessionLost("Remote session expired; restarting the agent.");
-
-            // Goes through the normal backoff so a session that keeps dropping cannot
-            // turn into a restart loop.
-            _consecutiveFailures++;
-            ScheduleRestart();
+            _machine.Apply(signal);
         }
-        finally
+        catch (Exception ex)
         {
-            _mutex.Release();
+            _log.Write(LogSource.Tray, $"Agent output handling failed ({ex.GetType().Name}).");
         }
+        finally { _mutex.Release(); }
     }
 
     private void HandleExited(object? sender, int? exitCode)
@@ -389,7 +413,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
             return;
         }
 
-        _ = Task.Run(() => OnAgentExitedAsync(source, exitCode));
+        _ = OnAgentExitedAsync(source, exitCode);
     }
 
     private async Task OnAgentExitedAsync(IAgentProcess source, int? exitCode)
@@ -401,16 +425,12 @@ public sealed class AgentSupervisor : IAsyncDisposable
             // Restart or Re-authenticate installs a different process; acting on whatever
             // _process happens to hold now would detach the replacement and start a third
             // agent alongside it.
-            if (!ReferenceEquals(_process, source))
+            if (_disposed || !ReferenceEquals(_process, source))
             {
                 return;
             }
 
-            var process = source;
-            _process = null;
-            process.OutputReceived -= HandleOutput;
-            process.Exited -= HandleExited;
-            process.Dispose();
+            await StopCoreAsync().ConfigureAwait(false);
 
             _log.Write(
                 LogSource.Tray,
@@ -439,6 +459,12 @@ public sealed class AgentSupervisor : IAsyncDisposable
             NotifyStartFailureIfNeeded(_machine.Snapshot.LastError);
             ScheduleRestart();
         }
+        catch (Exception ex)
+        {
+            _log.Write(LogSource.Tray, $"Agent exit cleanup failed ({ex.GetType().Name}); automatic restart stopped.");
+            Raise(new TrayNotification(NotificationKind.StartFailure,
+                "Remote Commander - cleanup failed", "Retry Stop before restarting the agent."));
+        }
         finally
         {
             _mutex.Release();
@@ -456,11 +482,12 @@ public sealed class AgentSupervisor : IAsyncDisposable
 
         var cts = new CancellationTokenSource();
         _restartCts = cts;
+        var token = cts.Token; // Capture before CancelPendingRestart can dispose the source.
         _ = Task.Run(async () =>
         {
             try
             {
-                await Task.Delay(delay, cts.Token).ConfigureAwait(false);
+                await Task.Delay(delay, token).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -470,7 +497,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
             await _mutex.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (cts.IsCancellationRequested || !_agentWanted || _disposed)
+                if (token.IsCancellationRequested || !_agentWanted || _disposed)
                 {
                     return;
                 }
@@ -583,8 +610,9 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 Raise(new TrayNotification(
                     NotificationKind.AuthenticationRequired,
                     "Remote Commander - sign-in required",
-                    "Desktop Commander needs you to sign in. Your browser should open automatically; "
-                    + "if it does not, use \"Open sign-in page\" in the tray menu.",
+                    snapshot.RequiresReauthentication
+                        ? "Your session expired. Click this notification or choose Re-authenticate to sign in again."
+                        : "Please sign in using your browser, or choose Open sign-in page in the tray menu.",
                     snapshot.VerificationUri));
             }
         }
@@ -636,28 +664,44 @@ public sealed class AgentSupervisor : IAsyncDisposable
     private static IEnumerable<string> SplitLines(string text)
         => text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (_disposed)
-        {
-            return;
-        }
+        lock (_disposeGate) return new ValueTask(_disposeTask ??= DisposeCoreAsync());
+    }
 
+    private async Task DisposeCoreAsync()
+    {
         _disposed = true;
         await _healthTimer.DisposeAsync().ConfigureAwait(false);
-
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
             _agentWanted = false;
+            _machine.SetAgentWanted(false);
+            _acceptOutput = false;
             CancelPendingRestart();
-            await StopCoreAsync().ConfigureAwait(false);
+            try { await StopCoreAsync().ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                _log.Write(LogSource.Tray, $"Exit cleanup failed ({ex.GetType().Name}); closing the owned job as a final backstop.");
+            }
+            finally
+            {
+                // A failing drain still must not retain the kill-on-close handle when
+                // exiting. During ordinary Restart we instead keep ownership and block.
+                var remaining = _process;
+                _process = null;
+                if (remaining is not null)
+                {
+                    remaining.OutputReceived -= HandleOutput;
+                    remaining.Exited -= HandleExited;
+                    try { remaining.Dispose(); }
+                    catch (Exception ex) { _log.Write(LogSource.Tray, $"Job disposal reported {ex.GetType().Name}."); }
+                }
+            }
         }
-        finally
-        {
-            _mutex.Release();
-        }
-
-        _mutex.Dispose();
+        finally { _mutex.Release(); }
+        // Queued callbacks can acquire, observe _disposed and return. No native wait
+        // handle is allocated by this SemaphoreSlim; do not dispose beneath waiters.
     }
 }

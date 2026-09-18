@@ -1,171 +1,98 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
+using Microsoft.Win32.SafeHandles;
 
 namespace RemoteCommanderTray.Windows;
 
-/// <summary>
-/// A kill-on-close job object that every agent process is assigned to.
-/// </summary>
-/// <remarks>
-/// <para>
-/// One job is created per agent generation, not one per tray. A shared job only dies when
-/// the tray disposes it, so a descendant that outlived its own root process - the local
-/// MCP node.exe an npm shim spawned, say - would survive every restart until the tray
-/// exited. Owning the job per generation means it can be terminated the moment that
-/// generation ends.
-/// </para>
-/// <para>
-/// Kill-on-close is still the backstop for a tray that is killed outright from Task
-/// Manager: Windows tears the job down when the last handle to it closes.
-/// </para>
-/// </remarks>
+/// <summary>One kill-on-close container per agent generation, never shared between restarts.</summary>
 [SupportedOSPlatform("windows")]
 internal sealed class JobObject : IDisposable
 {
-    private const int JobObjectExtendedLimitInformation = 9;
-    private const uint JobObjectLimitKillOnJobClose = 0x00002000;
-
-    private IntPtr _handle;
+    private readonly SafeFileHandle _handle;
+    internal IntPtr Handle => _handle.DangerousGetHandle();
 
     public JobObject()
     {
         _handle = CreateJobObjectW(IntPtr.Zero, null);
-        if (_handle == IntPtr.Zero)
+        if (_handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+        var limits = new ExtendedLimits
         {
-            throw new InvalidOperationException(
-                $"CreateJobObject failed (error {Marshal.GetLastWin32Error()}).");
-        }
-
-        var limits = new JobObjectExtendedLimitInformationStruct
-        {
-            BasicLimitInformation = new JobObjectBasicLimitInformation
-            {
-                // Kill on close only. Breakaway is deliberately not permitted: a
-                // grandchild that escaped the job is exactly the leftover agent this
-                // exists to prevent.
-                LimitFlags = JobObjectLimitKillOnJobClose,
-            },
+            Basic = new BasicLimits { Flags = 0x2000 }, // KILL_ON_JOB_CLOSE; no breakaway.
         };
-
-        var size = Marshal.SizeOf<JobObjectExtendedLimitInformationStruct>();
-        var buffer = Marshal.AllocHGlobal(size);
         try
         {
-            Marshal.StructureToPtr(limits, buffer, fDeleteOld: false);
-            if (!SetInformationJobObject(_handle, JobObjectExtendedLimitInformation, buffer, (uint)size))
-            {
-                throw new InvalidOperationException(
-                    $"SetInformationJobObject failed (error {Marshal.GetLastWin32Error()}).");
-            }
+            if (!SetInformationJobObject(_handle, 9, ref limits, (uint)Marshal.SizeOf<ExtendedLimits>()))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
         }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-        }
+        catch { _handle.Dispose(); throw; }
     }
 
-    /// <summary>Adds a process to the job.</summary>
-    /// <exception cref="InvalidOperationException">
-    /// The process could not be assigned, which means nothing guarantees its descendants
-    /// will be cleaned up. The caller decides whether that is fatal.
-    /// </exception>
-    public void Assign(IntPtr processHandle)
+    /// <summary>Do not start a replacement until all descendants have actually terminated.</summary>
+    public void TerminateAndWait(TimeSpan timeout)
     {
-        if (_handle == IntPtr.Zero || processHandle == IntPtr.Zero)
+        if (_handle.IsClosed) return;
+        if (ActiveProcesses() == 0) return;
+        if (!TerminateJobObject(_handle, 1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        var clock = Stopwatch.StartNew();
+        while (ActiveProcesses() != 0)
         {
-            throw new InvalidOperationException("The job object or the process handle is not available.");
-        }
-
-        if (!AssignProcessToJobObject(_handle, processHandle))
-        {
-            throw new InvalidOperationException(
-                $"AssignProcessToJobObject failed (error {Marshal.GetLastWin32Error()}).");
+            if (clock.Elapsed >= timeout)
+                throw new TimeoutException("The agent job did not drain; replacement is blocked.");
+            Thread.Sleep(20);
         }
     }
 
-    /// <summary>
-    /// Kills every process still in the job, including descendants whose own root has
-    /// already exited. Safe to call more than once.
-    /// </summary>
-    public void Terminate()
+    private uint ActiveProcesses()
     {
-        if (_handle == IntPtr.Zero)
-        {
-            return;
-        }
-
-        // A job with no live members returns false with ERROR_ACCESS_DENIED on some
-        // builds; there is nothing to do about it and nothing left to kill.
-        TerminateJobObject(_handle, 0);
+        if (!QueryInformationJobObject(_handle, 1, out Accounting info,
+            (uint)Marshal.SizeOf<Accounting>(), IntPtr.Zero))
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        return info.ActiveProcesses;
     }
 
-    public void Dispose()
-    {
-        if (_handle == IntPtr.Zero)
-        {
-            return;
-        }
-
-        CloseHandle(_handle);
-        _handle = IntPtr.Zero;
-    }
+    // SafeHandle is also the crash/finalization backstop. The explicit drain above is
+    // still required for normal Stop/Restart so generations never overlap.
+    public void Dispose() => _handle.Dispose();
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct JobObjectBasicLimitInformation
+    private struct BasicLimits
     {
-        public long PerProcessUserTimeLimit;
-        public long PerJobUserTimeLimit;
-        public uint LimitFlags;
-        public nuint MinimumWorkingSetSize;
-        public nuint MaximumWorkingSetSize;
+        public long ProcessTime, JobTime;
+        public uint Flags;
+        public nuint MinWorkingSet, MaxWorkingSet;
         public uint ActiveProcessLimit;
         public nuint Affinity;
-        public uint PriorityClass;
-        public uint SchedulingClass;
+        public uint PriorityClass, SchedulingClass;
     }
-
     [StructLayout(LayoutKind.Sequential)]
     private struct IoCounters
     {
-        public ulong ReadOperationCount;
-        public ulong WriteOperationCount;
-        public ulong OtherOperationCount;
-        public ulong ReadTransferCount;
-        public ulong WriteTransferCount;
-        public ulong OtherTransferCount;
+        public ulong ReadOperations, WriteOperations, OtherOperations, ReadBytes, WriteBytes, OtherBytes;
     }
-
     [StructLayout(LayoutKind.Sequential)]
-    private struct JobObjectExtendedLimitInformationStruct
+    private struct ExtendedLimits
     {
-        public JobObjectBasicLimitInformation BasicLimitInformation;
-        public IoCounters IoInfo;
-        public nuint ProcessMemoryLimit;
-        public nuint JobMemoryLimit;
-        public nuint PeakProcessMemoryUsed;
-        public nuint PeakJobMemoryUsed;
+        public BasicLimits Basic;
+        public IoCounters Io;
+        public nuint ProcessMemory, JobMemory, PeakProcessMemory, PeakJobMemory;
     }
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CreateJobObjectW(IntPtr securityAttributes, string? name);
-
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Accounting
+    {
+        public long TotalUser, TotalKernel, PeriodUser, PeriodKernel;
+        public uint PageFaults, TotalProcesses, ActiveProcesses, TerminatedProcesses;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+    private static extern SafeFileHandle CreateJobObjectW(IntPtr attributes, string? name);
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetInformationJobObject(
-        IntPtr job,
-        int infoClass,
-        IntPtr info,
-        uint infoLength);
-
+    private static extern bool SetInformationJobObject(SafeFileHandle job, int infoClass, ref ExtendedLimits info, uint length);
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
-
+    private static extern bool QueryInformationJobObject(SafeFileHandle job, int infoClass, out Accounting info, uint length, IntPtr returned);
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool CloseHandle(IntPtr handle);
+    private static extern bool TerminateJobObject(SafeFileHandle job, uint exitCode);
 }

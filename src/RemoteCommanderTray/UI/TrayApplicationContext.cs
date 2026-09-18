@@ -16,7 +16,6 @@ namespace RemoteCommanderTray.UI;
 internal sealed class TrayApplicationContext : ApplicationContext
 {
     private const int TooltipMaxLength = 63;
-    private const int DiagnosticsLogLines = 25;
 
     private readonly AppPaths _paths;
     private readonly RollingFileLog _log;
@@ -61,9 +60,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _marshal = new Control();
         _marshal.CreateControl();
 
-        _processFactory = new WindowsAgentProcessFactory(
-            () => _settings().RequireJobObject,
-            message => _log.Write(LogSource.Tray, message));
+        _processFactory = new WindowsAgentProcessFactory();
 
         // Raw agent output can contain whatever a remote tool call read, so it only gets
         // written when the user opts in, and never to the file diagnostics reads.
@@ -165,7 +162,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var signInVisible = snapshot.State == AgentState.AuthenticationRequired;
         _signInSeparator.Visible = signInVisible;
         _openSignInItem.Visible = signInVisible;
-        _openSignInItem.Enabled = !string.IsNullOrWhiteSpace(snapshot.VerificationUri);
+        _openSignInItem.Text = snapshot.RequiresReauthentication ? "Sign in again..." : "Open sign-in page";
+        _openSignInItem.Enabled = !_busy && (snapshot.RequiresReauthentication || !string.IsNullOrWhiteSpace(snapshot.VerificationUri));
         _copyCodeItem.Visible = signInVisible && !string.IsNullOrWhiteSpace(snapshot.UserCode);
         _copyCodeItem.Text = snapshot.UserCode is null
             ? "Copy sign-in code"
@@ -186,9 +184,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         var state = StartupRegistration.GetState();
         _launchAtSignInItem.Checked = state == StartupState.Enabled;
-        _launchAtSignInItem.Text = state == StartupState.DisabledByWindows
-            ? "Launch at sign-in (turned off in Windows)"
-            : "Launch at sign-in";
+        _launchAtSignInItem.Text = state switch
+        {
+            StartupState.DisabledByWindows => "Launch at sign-in (turned off in Windows)",
+            StartupState.Unknown => "Launch at sign-in (check Windows settings)",
+            _ => "Launch at sign-in",
+        };
     }
 
     private static string GlyphFor(AgentState state) => state switch
@@ -205,6 +206,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private string BuildDetailLine(AgentSnapshot snapshot)
     {
+        if (snapshot.RequiresReauthentication) return "Session expired. Choose Sign in again.";
         if (snapshot.NextRestartUtc is { } due)
         {
             var seconds = Math.Max(0, (int)(due - DateTimeOffset.UtcNow).TotalSeconds);
@@ -266,6 +268,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OpenSignInPage()
     {
+        if (_snapshot.RequiresReauthentication) { Reauthenticate(); return; }
         if (!Shell.OpenUrl(_snapshot.VerificationUri))
         {
             MessageBox.Show(
@@ -300,18 +303,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _log.Path,
             StartupRegistration.GetState());
 
-        var report = DiagnosticsReport.Build(_snapshot, context, _log.Tail(DiagnosticsLogLines));
+        var report = DiagnosticsReport.Build(_snapshot, context);
         CopyToClipboard(report, "Diagnostics copied to the clipboard.");
     }
 
     private void ToggleLaunchAtSignIn()
     {
         var state = StartupRegistration.GetState();
-        if (state == StartupState.DisabledByWindows)
+        if (state is StartupState.DisabledByWindows or StartupState.Unknown)
         {
             // Windows owns this decision; writing the Run value again would not clear it.
             var open = MessageBox.Show(
-                "Windows has turned off startup for Remote Commander Tray.\n\n"
+                "Startup is disabled or its state could not be confirmed.\n\n"
                 + "Only Windows can turn it back on. Open Startup Apps settings now?",
                 "Launch at sign-in",
                 MessageBoxButtons.OKCancel,
@@ -329,7 +332,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (StartupRegistration.TrySet(target, out var error))
         {
             RefreshStartupItem();
-            _log.Write(LogSource.Tray, $"Launch at sign-in {(target ? "enabled" : "disabled")}.");
+            _log.Write(LogSource.Tray, $"Startup registration changed; observed state: {StartupRegistration.GetState()}.");
+            if (target && StartupRegistration.GetState() != StartupState.Enabled)
+                OpenStartupSettings();
             return;
         }
 
@@ -424,6 +429,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnBalloonClicked()
     {
+        if (_snapshot.RequiresReauthentication && !_busy) { Reauthenticate(); return; }
         var uri = _pendingNotificationUri;
         _pendingNotificationUri = null;
         if (!Shell.OpenUrl(uri))
@@ -436,6 +442,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void Run(Func<Task> command)
     {
+        if (_busy || _exiting) return;
         _busy = true;
         RefreshMenu();
         _ = RunCoreAsync(command);
@@ -517,6 +524,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            _supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
             _verboseLog?.Dispose();
