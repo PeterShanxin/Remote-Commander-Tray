@@ -70,7 +70,6 @@ public sealed class AgentStateMachine
             var next = s with
             {
                 ProcessRunning = false,
-                RequiresReauthentication = false,
                 NextRestartUtc = null,
                 VerificationUri = null,
                 UserCode = null,
@@ -78,7 +77,21 @@ public sealed class AgentStateMachine
 
             if (userRequested || !s.AgentWanted)
             {
-                return Transition(next with { LastError = null }, AgentState.Stopped);
+                // A deliberate stop ends the generation and the latch with it: the user
+                // is choosing what happens next either way.
+                return Transition(
+                    next with { LastError = null, RequiresReauthentication = false },
+                    AgentState.Stopped);
+            }
+
+            // The expired CLI stays alive, but not forever - it can still crash, or be
+            // killed with the session already dead. Clearing the latch here would let the
+            // exit path restart it, and the official CLI would open a browser on its own
+            // because it has no credentials left. The latch outlives the process and only
+            // a deliberately started generation clears it.
+            if (s.RequiresReauthentication)
+            {
+                return Transition(next, AgentState.AuthenticationRequired);
             }
 
             var reason = exitCode is null

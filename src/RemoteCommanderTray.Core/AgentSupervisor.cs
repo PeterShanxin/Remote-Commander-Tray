@@ -442,6 +442,17 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 return;
             }
 
+            if (_machine.Snapshot.RequiresReauthentication)
+            {
+                // Restarting now would hand the official CLI no credentials, and it would
+                // open a browser by itself - the unprompted sign-in the latch exists to
+                // prevent. The tray waits for the user to choose Sign in again.
+                _log.Write(
+                    LogSource.Tray,
+                    "Agent exited while sign-in was required; not restarting until the user signs in.");
+                return;
+            }
+
             var settings = _settings();
             var ranFor = _clock() - _runStartedUtc;
             if (ranFor < TimeSpan.FromSeconds(settings.HealthyRunSeconds))
