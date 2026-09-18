@@ -7,9 +7,17 @@ namespace RemoteCommanderTray.Windows;
 /// A kill-on-close job object that every agent process is assigned to.
 /// </summary>
 /// <remarks>
-/// This is what makes acceptance criterion "no leftover agent after Exit" hold even if
-/// the tray is killed from Task Manager: Windows tears the whole job down when the last
-/// handle to it closes, which includes the node.exe the npm shim spawned.
+/// <para>
+/// One job is created per agent generation, not one per tray. A shared job only dies when
+/// the tray disposes it, so a descendant that outlived its own root process - the local
+/// MCP node.exe an npm shim spawned, say - would survive every restart until the tray
+/// exited. Owning the job per generation means it can be terminated the moment that
+/// generation ends.
+/// </para>
+/// <para>
+/// Kill-on-close is still the backstop for a tray that is killed outright from Task
+/// Manager: Windows tears the job down when the last handle to it closes.
+/// </para>
 /// </remarks>
 [SupportedOSPlatform("windows")]
 internal sealed class JobObject : IDisposable
@@ -56,11 +64,40 @@ internal sealed class JobObject : IDisposable
         }
     }
 
-    /// <summary>Adds a process to the job. Returns false if the process already exited.</summary>
-    public bool TryAssign(IntPtr processHandle)
-        => _handle != IntPtr.Zero
-           && processHandle != IntPtr.Zero
-           && AssignProcessToJobObject(_handle, processHandle);
+    /// <summary>Adds a process to the job.</summary>
+    /// <exception cref="InvalidOperationException">
+    /// The process could not be assigned, which means nothing guarantees its descendants
+    /// will be cleaned up. The caller decides whether that is fatal.
+    /// </exception>
+    public void Assign(IntPtr processHandle)
+    {
+        if (_handle == IntPtr.Zero || processHandle == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("The job object or the process handle is not available.");
+        }
+
+        if (!AssignProcessToJobObject(_handle, processHandle))
+        {
+            throw new InvalidOperationException(
+                $"AssignProcessToJobObject failed (error {Marshal.GetLastWin32Error()}).");
+        }
+    }
+
+    /// <summary>
+    /// Kills every process still in the job, including descendants whose own root has
+    /// already exited. Safe to call more than once.
+    /// </summary>
+    public void Terminate()
+    {
+        if (_handle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        // A job with no live members returns false with ERROR_ACCESS_DENIED on some
+        // builds; there is nothing to do about it and nothing left to kill.
+        TerminateJobObject(_handle, 0);
+    }
 
     public void Dispose()
     {
@@ -123,6 +160,10 @@ internal sealed class JobObject : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

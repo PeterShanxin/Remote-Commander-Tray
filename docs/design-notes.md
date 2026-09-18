@@ -60,20 +60,58 @@ recovery.
 
 `Remote session expired and could not be renewed` is the one connection-level message
 that *is* treated as an error, because the CLI itself says the process has to be
-restarted to recover.
+restarted to recover. Nothing exits on that path - the CLI stops its heartbeat and stays
+alive - so the supervisor acts on the message directly: one deduplicated notification per
+generation, then a stop and a restart routed through the normal backoff, so a session that
+keeps dropping cannot become a restart loop.
 
 ## Exactly one agent
 
-Three independent guards:
+Four independent guards:
 
 1. A named mutex (`Local\RemoteCommanderTray.SingleInstance.<user>`) means one tray per
    signed-in user.
 2. Every supervisor entry point serializes on one semaphore, and `StartCore` returns
    early if a live process already exists - so a restart timer and a menu click cannot
    race into two agents.
-3. Every child is assigned to a `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job object with
-   breakaway disallowed. Stopping kills the process tree; the job object is the backstop
-   for a tray that is itself killed, and covers the `node.exe` an npm shim spawns.
+3. Each generation carries its identity through its own callbacks. An exit callback that
+   was queued before a Restart re-checks, under the semaphore, that the process it came
+   from is still the current one; output from a replaced generation is dropped the same
+   way. Without that check, a queued exit would detach the replacement and start a third
+   agent beside it.
+4. Every generation gets **its own** `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` job object with
+   breakaway disallowed, and that job is terminated when the generation ends - on Stop, on
+   Restart, and on natural exit. Killing the tree from the root is not enough: once the
+   root has exited there is no common parent left to walk, so a surviving local-MCP
+   `node.exe` can only be reached through the job. Kill-on-close remains the backstop for a
+   tray that is killed outright.
+
+The mutex coordinates trays, and nothing else. A pre-existing scheduled task or terminal
+running `desktop-commander remote` is invisible to it, and the tray deliberately does not
+hunt for unrelated Node processes to kill. Handing over from a previous launcher is a
+documented manual step.
+
+## What reaches the log
+
+The official CLI logs completed tool calls with `JSON.stringify(result)`, and the
+serialized result lands on its own line with no prefix to recognize it by. Scrubbing that
+with regexes cannot be sound over arbitrary tool output - a nested
+`\"refresh_token\":\"...\"` inside an escaped string defeats a pattern written for plain
+JSON, and opaque credentials are not JWT-shaped at all.
+
+So `agent.log` is an allowlist, not a filter:
+
+| Line | What is logged |
+| --- | --- |
+| Recognized CLI status line | verbatim |
+| `Received tool call ...` / `Tool call X completed:` | `tool call X` (name only, and only if it is a plain identifier) |
+| The line after `completed:` | `<tool result omitted, N chars>` |
+| Anything else | verbatim if short and free of braces, brackets and quotes; otherwise `<agent output omitted, N chars>` |
+
+`SecretRedactor` still runs over everything that survives, including the escaped-JSON key
+forms, but as defence in depth rather than as the guarantee. Raw output goes to
+`agent-verbose.log` only when the user sets `verboseAgentLog`, and diagnostics never reads
+that file.
 
 ## Launching the CLI
 
@@ -96,22 +134,37 @@ which host runs the tests.
 | 1 | Starts at Windows sign-in | `StartupRegistration`, per-user `Run` key |
 | 2 | No console window | `CreateNoWindow` + `UseShellExecute = false`, `WinExe` output |
 | 3 | Tray always shows the real state | `AgentStateMachine` -> `TrayApplicationContext` |
-| 4 | At most one agent | Mutex, supervisor semaphore, job object |
+| 4 | At most one agent | Mutex, supervisor semaphore, generation identity, job object |
 | 5 | Crash recovery | `RestartBackoff` + `AgentSupervisor.ScheduleRestart` |
 | 6 | Brief network loss does not cause restarts | `ChannelDisrupted` never touches the process |
-| 7 | Expired sign-in is obvious | Key icon, balloon, sign-in menu section |
+| 7 | Expired sign-in is obvious | Key icon, balloon, sign-in menu section, session-loss recovery |
 | 8 | One-click re-authenticate | `AgentSupervisor.ReauthenticateAsync` |
 | 9 | Start / Stop / Restart | Tray menu |
 | 10 | Logs and diagnostics | `RollingFileLog`, `DiagnosticsReport` |
-| 11 | No leftover agent after Exit | `DisposeAsync` kills the tree; job object backstop |
+| 11 | No leftover agent after Exit | Per-generation job terminated on every end; kill-on-close backstop |
 | 12 | Runs on ARM64 Windows | `win-arm64` publish leg in CI |
+
+## Startup state is not one registry value
+
+Turning a startup app off in Windows' Startup Apps page does not delete its `Run` value;
+Windows records the decision separately under `Explorer\StartupApproved\Run`, in a binary
+value whose first byte has bit 0 set when disabled. Treating the presence of the `Run`
+command as "enabled" shows a ticked box for something that will not launch, and rewriting
+the `Run` value does not clear the separate decision.
+
+`StartupApproval` resolves the two reads into `NotRegistered` / `Enabled` /
+`DisabledByWindows`. The menu shows the effective state, and when Windows has disabled the
+entry the tray offers `ms-settings:startupapps` rather than pretending it can re-enable
+it. The user's external choice is preserved, including by the path-refresh at launch.
 
 ## Known gaps
 
 - **Not yet run on Windows.** Everything compiles for `win-x64` and `win-arm64`, and the
-  76 core tests pass, but the tray UI, job object, registry entry and real process
+  102 core tests pass, but the tray UI, job object, registry entry and real process
   launching have only been exercised by cross-compilation. Criteria 1, 2, 4, 11 and 12
-  need one manual pass on a real machine before v0.1 is called done.
+  need one manual pass on a real machine before v0.1 is called done. In particular the
+  job-per-generation teardown and the `StartupApproved` round trip (enable in the tray,
+  disable in Windows, reopen the menu, re-enable) want checking on real hardware.
 - **Stopping is a kill, not a graceful shutdown.** Without a console there is no way to
   deliver Ctrl+C, so `StopAsync` kills the process tree. The device is marked offline
   server-side by its own heartbeat timeout rather than by its shutdown path. Sending

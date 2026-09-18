@@ -20,6 +20,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private readonly AppPaths _paths;
     private readonly RollingFileLog _log;
+    private readonly RollingFileLog? _verboseLog;
     private readonly AgentSupervisor _supervisor;
     private readonly WindowsAgentProcessFactory _processFactory;
     private readonly TrayIcons _icons = new();
@@ -61,7 +62,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _marshal.CreateControl();
 
         _processFactory = new WindowsAgentProcessFactory(
-            reason => _log.Write(LogSource.Tray, $"Job object unavailable: {reason}"));
+            () => _settings().RequireJobObject,
+            message => _log.Write(LogSource.Tray, message));
+
+        // Raw agent output can contain whatever a remote tool call read, so it only gets
+        // written when the user opts in, and never to the file diagnostics reads.
+        _verboseLog = settings.VerboseAgentLog
+            ? new RollingFileLog(paths.VerboseAgentLogFile, settings.LogMaxBytes, settings.LogRetainedFiles)
+            : null;
 
         var machine = new AgentStateMachine();
         _supervisor = new AgentSupervisor(
@@ -69,7 +77,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _processFactory,
             new AgentCommandResolver(),
             _settings,
-            _log);
+            _log,
+            verboseLog: _verboseLog);
 
         _headerItem = new ToolStripMenuItem("Starting...") { Enabled = false };
         _detailItem = new ToolStripMenuItem("Last connected: never") { Enabled = false };
@@ -88,7 +97,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _launchAtSignInItem = new ToolStripMenuItem("Launch at sign-in", null, (_, _) => ToggleLaunchAtSignIn())
         {
             CheckOnClick = false,
-            Checked = StartupRegistration.IsEnabled(),
         };
 
         _menu = new ContextMenuStrip();
@@ -167,7 +175,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _restartItem.Enabled = !_busy;
         _reauthenticateItem.Enabled = !_busy;
         _toggleAgentItem.Enabled = !_busy;
-        _launchAtSignInItem.Checked = StartupRegistration.IsEnabled();
+        RefreshStartupItem();
+    }
+
+    /// <summary>
+    /// Shows what will actually happen at the next sign-in. A Run entry that Windows has
+    /// switched off is not "on", and re-ticking it here would not turn it back on.
+    /// </summary>
+    private void RefreshStartupItem()
+    {
+        var state = StartupRegistration.GetState();
+        _launchAtSignInItem.Checked = state == StartupState.Enabled;
+        _launchAtSignInItem.Text = state == StartupState.DisabledByWindows
+            ? "Launch at sign-in (turned off in Windows)"
+            : "Launch at sign-in";
     }
 
     private static string GlyphFor(AgentState state) => state switch
@@ -277,7 +298,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture.ToString(),
             _supervisor.LaunchDescription,
             _log.Path,
-            StartupRegistration.IsEnabled());
+            StartupRegistration.GetState());
 
         var report = DiagnosticsReport.Build(_snapshot, context, _log.Tail(DiagnosticsLogLines));
         CopyToClipboard(report, "Diagnostics copied to the clipboard.");
@@ -285,10 +306,29 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ToggleLaunchAtSignIn()
     {
-        var target = !StartupRegistration.IsEnabled();
+        var state = StartupRegistration.GetState();
+        if (state == StartupState.DisabledByWindows)
+        {
+            // Windows owns this decision; writing the Run value again would not clear it.
+            var open = MessageBox.Show(
+                "Windows has turned off startup for Remote Commander Tray.\n\n"
+                + "Only Windows can turn it back on. Open Startup Apps settings now?",
+                "Launch at sign-in",
+                MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Information);
+
+            if (open == DialogResult.OK)
+            {
+                OpenStartupSettings();
+            }
+
+            return;
+        }
+
+        var target = state == StartupState.NotRegistered;
         if (StartupRegistration.TrySet(target, out var error))
         {
-            _launchAtSignInItem.Checked = target;
+            RefreshStartupItem();
             _log.Write(LogSource.Tray, $"Launch at sign-in {(target ? "enabled" : "disabled")}.");
             return;
         }
@@ -299,6 +339,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
             "Remote Commander Tray",
             MessageBoxButtons.OK,
             MessageBoxIcon.Warning);
+    }
+
+    private static void OpenStartupSettings()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                StartupRegistration.StartupAppsSettingsUri)
+            {
+                UseShellExecute = true,
+            })?.Dispose();
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
+        {
+            // The Settings app is unavailable; the message box already said what to do.
+        }
     }
 
     private void ShowAbout()
@@ -463,9 +519,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
+            _verboseLog?.Dispose();
             _menu.Dispose();
             _icons.Dispose();
-            _processFactory.Dispose();
             _marshal.Dispose();
             _log.Dispose();
         }

@@ -47,6 +47,18 @@ package on first run.
 
 There is no installer and no auto-updater in v0.1. To update, replace the `.exe`.
 
+### If you already run the Remote Device another way
+
+The tray's single-instance guard only coordinates other copies of the tray. It does not
+know about a scheduled task, a shortcut, or a terminal window you already use to run
+`desktop-commander remote`. Stop and disable that launcher before enabling the tray,
+otherwise two supervisors will run the same device. The tray will not go looking for
+other Node processes to kill.
+
+If **Launch at sign-in** shows "(turned off in Windows)", Windows has disabled the entry
+from its own Startup Apps page. Only Windows can turn it back on; clicking the item opens
+that page.
+
 ## Tray states
 
 Each state has its own shape as well as its own colour, so it stays readable without
@@ -116,8 +128,19 @@ Everything the tray writes lives in `%LOCALAPPDATA%\RemoteCommanderTray\`:
 
 ```
 settings.json
-logs\agent.log        (rotated at 1 MB, 3 files kept)
+logs\agent.log            (rotated at 1 MB, 3 files kept)
+logs\agent-verbose.log    (only when verboseAgentLog is on)
 ```
+
+`agent.log` holds the tray's own messages and the CLI's status lines. It deliberately
+does **not** hold tool-call arguments or results: the official CLI logs completed tool
+calls with `JSON.stringify`, so a single `read_file` of a credentials file would
+otherwise land in the log and, through "Copy diagnostics", on the clipboard. Those lines
+are reduced to `tool call <name>` and `<tool result omitted, N chars>`.
+
+Setting `verboseAgentLog` writes the raw output to a second file instead. That file can
+contain whatever a remote tool call read, diagnostics never touches it, and turning it on
+is an explicit choice to keep such a file.
 
 ### settings.json
 
@@ -133,6 +156,8 @@ logs\agent.log        (rotated at 1 MB, 3 files kept)
 | `logMaxBytes` | `1048576` | Rotate `agent.log` past this size |
 | `logRetainedFiles` | `3` | How many rotated logs to keep |
 | `notificationsEnabled` | `true` | Desktop notifications on or off |
+| `verboseAgentLog` | `false` | Also write raw agent output to `logs/agent-verbose.log` |
+| `requireJobObject` | `true` | Refuse to start an agent that cannot be placed in a job object |
 
 "Launch at sign-in" is deliberately *not* here. Its single source of truth is the
 per-user registry value `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\RemoteCommanderTray`,
@@ -154,8 +179,10 @@ Restart count:  0 (total 0)
 ...
 ```
 
-It also appends the last 25 log lines, which is what makes a bug report useful. Every
-line goes through a redactor first, so nothing token-shaped reaches the clipboard.
+It also appends the last 25 lines of `agent.log`, which is what makes a bug report
+useful. Those lines are already free of tool payloads by construction (see above), and
+everything passes through a redactor on the way out as a second line of defence.
+`agent-verbose.log` is never included.
 
 ## Security boundaries
 

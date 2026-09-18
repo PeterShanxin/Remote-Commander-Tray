@@ -68,6 +68,17 @@ public enum AgentSignalKind
 
     /// <summary>The CLI is shutting itself down (signal, or a remote shutdown request).</summary>
     ShuttingDown,
+
+    /// <summary>
+    /// A tool-call line. The payload is deliberately not carried: only the tool name is,
+    /// so nothing the tool read can reach the log.
+    /// </summary>
+    ToolCall,
+
+    /// <summary>
+    /// A line the CLI printed as the body of a tool result. Never logged verbatim.
+    /// </summary>
+    ToolPayload,
 }
 
 /// <summary>One parsed line.</summary>

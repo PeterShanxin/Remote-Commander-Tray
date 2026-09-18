@@ -45,6 +45,15 @@ npm install -g @wonderwhy-er/desktop-commander
 
 v0.1 没有安装包，也没有自动更新。升级时直接替换 `.exe`。
 
+### 如果你已经用别的方式在跑 Remote Device
+
+托盘的单实例保护只管其他托盘进程，它不知道你已有的 scheduled task、快捷方式或终端窗口。
+启用托盘前请先停用那个启动方式，否则会有两个 supervisor 管同一个设备。托盘不会去杀
+其他 Node 进程。
+
+如果 **Launch at sign-in** 显示 "(turned off in Windows)"，说明你在 Windows 的"启动应用"
+页面里关掉了它。只有 Windows 能重新打开；点击该菜单项会直接打开那个页面。
+
 ## 托盘状态
 
 图标不只靠颜色区分，每个状态有各自的图形：
@@ -112,8 +121,17 @@ Exit
 
 ```
 settings.json
-logs\agent.log        （1 MB 自动 rotation，保留 3 份）
+logs\agent.log            （1 MB 自动 rotation，保留 3 份）
+logs\agent-verbose.log    （仅在 verboseAgentLog 打开时）
 ```
+
+`agent.log` 只保存托盘自己的消息和 CLI 的状态行，**不保存** tool call 的参数和结果：
+官方 CLI 用 `JSON.stringify` 记录 tool call 结果，一次 `read_file` 读到凭据文件就会
+进日志、再通过 "Copy diagnostics" 进剪贴板。这类行会被缩减成 `tool call <name>` 和
+`<tool result omitted, N chars>`。
+
+打开 `verboseAgentLog` 会把原始输出写到另一个文件。那个文件可能包含任何 tool call
+读到的内容，diagnostics 永远不读它，打开它属于明确选择保留敏感数据。
 
 `settings.json` 的各项含义见 [英文 README](README.md#settingsjson)。
 

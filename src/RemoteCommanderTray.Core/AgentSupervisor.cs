@@ -27,12 +27,14 @@ public sealed class AgentSupervisor : IAsyncDisposable
     private readonly AgentCommandResolver _resolver;
     private readonly Func<TraySettings> _settings;
     private readonly RollingFileLog _log;
+    private readonly RollingFileLog? _verboseLog;
     private readonly RestartBackoff _backoff;
     private readonly SemaphoreSlim _mutex = new(1, 1);
     private readonly Func<DateTimeOffset> _clock;
     private readonly Timer _healthTimer;
 
-    private IAgentProcess? _process;
+    // Read from callback threads without the mutex, so the reference must be published.
+    private volatile IAgentProcess? _process;
     private CancellationTokenSource? _restartCts;
     private bool _agentWanted;
     private bool _disposed;
@@ -41,6 +43,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
     private bool _stallNotified;
     private bool _startFailureNotified;
     private bool _authNotified;
+    private bool _sessionLossHandled;
     private string _launchDescription = "(not resolved)";
 
     public AgentSupervisor(
@@ -50,13 +53,15 @@ public sealed class AgentSupervisor : IAsyncDisposable
         Func<TraySettings> settings,
         RollingFileLog log,
         Func<DateTimeOffset>? clock = null,
-        RestartBackoff? backoff = null)
+        RestartBackoff? backoff = null,
+        RollingFileLog? verboseLog = null)
     {
         _machine = machine;
         _factory = factory;
         _resolver = resolver;
         _settings = settings;
         _log = log;
+        _verboseLog = verboseLog;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _backoff = backoff ?? new RestartBackoff();
 
@@ -183,9 +188,11 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 .RunOnceAsync(resolution.Spec, TimeSpan.FromSeconds(30))
                 .ConfigureAwait(false);
 
+            var logoutParser = new AgentOutputParser();
             foreach (var line in SplitLines(result.Output))
             {
-                _log.Write(LogSource.Agent, line);
+                _log.Write(LogSource.Agent, AgentLogPolicy.Sanitize(line, logoutParser.Parse(line)));
+                _verboseLog?.Write(LogSource.Agent, line);
             }
 
             _log.Write(
@@ -234,8 +241,19 @@ public sealed class AgentSupervisor : IAsyncDisposable
 
         _launchDescription = resolution.Spec.Description;
         _parser.Reset();
+        _sessionLossHandled = false;
 
         var process = _factory.Create(resolution.Spec);
+
+        // The generation and its state are published *before* Start, because the real
+        // process begins raising exit and output events from inside Start. Registering
+        // afterwards lost an immediate exit for good, and let a late "Starting" overwrite
+        // an Online that early output had already established.
+        _process = process;
+        _runStartedUtc = _clock();
+        _stallNotified = false;
+        _machine.OnProcessStarted();
+
         process.OutputReceived += HandleOutput;
         process.Exited += HandleExited;
 
@@ -247,6 +265,11 @@ public sealed class AgentSupervisor : IAsyncDisposable
         {
             process.OutputReceived -= HandleOutput;
             process.Exited -= HandleExited;
+            if (ReferenceEquals(_process, process))
+            {
+                _process = null;
+            }
+
             process.Dispose();
             _log.Write(LogSource.Tray, $"Failed to launch agent: {ex.Message}");
             _machine.OnProcessExited(null, userRequested: false);
@@ -256,10 +279,6 @@ public sealed class AgentSupervisor : IAsyncDisposable
             return;
         }
 
-        _process = process;
-        _runStartedUtc = _clock();
-        _stallNotified = false;
-        _machine.OnProcessStarted();
         _log.Write(
             LogSource.Tray,
             $"Agent started (pid {process.ProcessId?.ToString() ?? "?"}): {resolution.Spec.Description}");
@@ -293,32 +312,101 @@ public sealed class AgentSupervisor : IAsyncDisposable
 
     private void HandleOutput(object? sender, AgentOutputLine line)
     {
-        _log.Write(line.IsError ? LogSource.AgentError : LogSource.Agent, line.Text);
-        _machine.Apply(_parser.Parse(line.Text));
-    }
-
-    private void HandleExited(object? sender, int? exitCode)
-    {
         if (!ReferenceEquals(sender, _process))
         {
-            // A process we already detached from. Its teardown is someone else's business.
+            // Output from a generation we have already replaced. Acting on it would let a
+            // dying agent drive the icon for the one that succeeded it.
             return;
         }
 
-        _ = Task.Run(() => OnAgentExitedAsync(exitCode));
+        var signal = _parser.Parse(line.Text);
+        var source = line.IsError ? LogSource.AgentError : LogSource.Agent;
+
+        _log.Write(source, AgentLogPolicy.Sanitize(line.Text, signal));
+        _verboseLog?.Write(source, line.Text);
+
+        _machine.Apply(signal);
+
+        if (signal.Kind == AgentSignalKind.SessionExpired)
+        {
+            HandleSessionLoss();
+        }
     }
 
-    private async Task OnAgentExitedAsync(int? exitCode)
+    /// <summary>
+    /// The official device prints "Remote session expired and could not be renewed",
+    /// stops its heartbeat, and then stays alive telling the user to restart it. Nothing
+    /// exits, so nothing else here would ever notice.
+    /// </summary>
+    private void HandleSessionLoss()
+    {
+        if (_sessionLossHandled)
+        {
+            // Once per generation: the CLI can print this more than once.
+            return;
+        }
+
+        _sessionLossHandled = true;
+        _log.Write(LogSource.Tray, "Remote session expired; restarting the agent to recover.");
+        Raise(new TrayNotification(
+            NotificationKind.SessionExpired,
+            "Remote Commander - session expired",
+            "Desktop Commander lost its Remote MCP session and is being restarted. "
+            + "If this keeps happening, use Re-authenticate to sign in again."));
+
+        _ = Task.Run(RecoverFromSessionLossAsync);
+    }
+
+    private async Task RecoverFromSessionLossAsync()
     {
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
-            var process = _process;
-            if (process is null)
+            if (_disposed || !_agentWanted)
             {
                 return;
             }
 
+            CancelPendingRestart();
+            await StopCoreAsync().ConfigureAwait(false);
+            _machine.OnSessionLost("Remote session expired; restarting the agent.");
+
+            // Goes through the normal backoff so a session that keeps dropping cannot
+            // turn into a restart loop.
+            _consecutiveFailures++;
+            ScheduleRestart();
+        }
+        finally
+        {
+            _mutex.Release();
+        }
+    }
+
+    private void HandleExited(object? sender, int? exitCode)
+    {
+        if (sender is not IAgentProcess source)
+        {
+            return;
+        }
+
+        _ = Task.Run(() => OnAgentExitedAsync(source, exitCode));
+    }
+
+    private async Task OnAgentExitedAsync(IAgentProcess source, int? exitCode)
+    {
+        await _mutex.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            // Re-check identity under the lock. This callback can sit in the queue while a
+            // Restart or Re-authenticate installs a different process; acting on whatever
+            // _process happens to hold now would detach the replacement and start a third
+            // agent alongside it.
+            if (!ReferenceEquals(_process, source))
+            {
+                return;
+            }
+
+            var process = source;
             _process = null;
             process.OutputReceived -= HandleOutput;
             process.Exited -= HandleExited;

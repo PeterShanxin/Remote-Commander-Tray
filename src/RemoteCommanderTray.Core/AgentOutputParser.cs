@@ -23,12 +23,14 @@ public sealed partial class AgentOutputParser
 {
     private bool _awaitingVerificationUri;
     private bool _awaitingUserCode;
+    private bool _awaitingToolPayload;
 
     /// <summary>Forget any half-seen authorization prompt. Call when a new process starts.</summary>
     public void Reset()
     {
         _awaitingVerificationUri = false;
         _awaitingUserCode = false;
+        _awaitingToolPayload = false;
     }
 
     /// <summary>Classify a single line of agent output.</summary>
@@ -37,6 +39,15 @@ public sealed partial class AgentOutputParser
         if (string.IsNullOrWhiteSpace(rawLine))
         {
             return AgentSignal.None;
+        }
+
+        if (_awaitingToolPayload)
+        {
+            // The CLI prints "Tool call X completed:\r\n <json>", so the serialized
+            // result lands on its own line with no prefix to recognize it by. The only
+            // safe rule is to treat whatever follows as payload.
+            _awaitingToolPayload = false;
+            return new AgentSignal(AgentSignalKind.ToolPayload);
         }
 
         var line = Normalize(rawLine);
@@ -55,6 +66,24 @@ public sealed partial class AgentOutputParser
         {
             _awaitingUserCode = false;
             return new AgentSignal(AgentSignalKind.UserCode, line);
+        }
+
+        // Tool calls carry arbitrary file and command content, so they are recognized
+        // early and reduced to a tool name before anything else looks at them.
+        if (line.StartsWith("Received tool call", StringComparison.OrdinalIgnoreCase))
+        {
+            return new AgentSignal(AgentSignalKind.ToolCall, ReadToolName(line, wordIndex: 4));
+        }
+
+        if (line.StartsWith("Tool call", StringComparison.OrdinalIgnoreCase))
+        {
+            var name = ReadToolName(line, wordIndex: 2);
+            if (line.EndsWith("completed:", StringComparison.OrdinalIgnoreCase))
+            {
+                _awaitingToolPayload = true;
+            }
+
+            return new AgentSignal(AgentSignalKind.ToolCall, name);
         }
 
         // Device lifecycle.
@@ -267,6 +296,22 @@ public sealed partial class AgentOutputParser
 
     private static bool LooksLikeUserCode(string line) => UserCode().IsMatch(line);
 
+    /// <summary>
+    /// Picks the tool name out of a tool-call line, and refuses anything that is not a
+    /// plain identifier so that a crafted argument cannot smuggle text into the log.
+    /// </summary>
+    private static string ReadToolName(string line, int wordIndex)
+    {
+        var words = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length <= wordIndex)
+        {
+            return "unknown";
+        }
+
+        var candidate = words[wordIndex].TrimEnd(':');
+        return ToolName().IsMatch(candidate) ? candidate : "unknown";
+    }
+
     [GeneratedRegex("\\x1b\\[[0-9;]*[A-Za-z]")]
     private static partial Regex AnsiEscape();
 
@@ -275,4 +320,7 @@ public sealed partial class AgentOutputParser
 
     [GeneratedRegex(@"^[A-Za-z0-9]{4,12}(-[A-Za-z0-9]{4,12}){0,3}$")]
     private static partial Regex UserCode();
+
+    [GeneratedRegex(@"^[A-Za-z0-9_\-]{1,64}$")]
+    private static partial Regex ToolName();
 }

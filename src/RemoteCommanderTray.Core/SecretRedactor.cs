@@ -33,9 +33,18 @@ public static partial class SecretRedactor
     [GeneratedRegex(@"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")]
     private static partial Regex JsonWebToken();
 
-    /// <summary><c>access_token=...</c>, <c>"refresh_token": "..."</c>, <c>apikey: ...</c> and friends.</summary>
+    /// <summary>
+    /// <c>access_token=...</c>, <c>"refresh_token": "..."</c>, <c>apikey: ...</c> and friends.
+    /// </summary>
+    /// <remarks>
+    /// The quote before and after the separator is optional and may itself be
+    /// backslash-escaped: the CLI serializes tool results with <c>JSON.stringify</c>, so a
+    /// nested object arrives as <c>\"refresh_token\":\"..."</c> rather than as plain JSON.
+    /// This is defence in depth only - <see cref="AgentLogPolicy"/> is what actually keeps
+    /// tool payloads out of the log.
+    /// </remarks>
     [GeneratedRegex(
-        """((?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|apikey|client[_-]?secret|password)["']?\s*[:=]\s*["']?)[A-Za-z0-9._\-]{8,}""",
+        """((?:access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|apikey|client[_-]?secret|secret|password|passwd|authorization)(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)[A-Za-z0-9._\-]{8,}""",
         RegexOptions.IgnoreCase)]
     private static partial Regex KeyedSecret();
 

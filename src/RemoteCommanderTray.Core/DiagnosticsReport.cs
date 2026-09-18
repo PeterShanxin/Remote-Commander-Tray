@@ -8,14 +8,16 @@ namespace RemoteCommanderTray.Core;
 /// <param name="Architecture">Process architecture, e.g. X64 or Arm64.</param>
 /// <param name="LaunchDescription">Resolved agent command line.</param>
 /// <param name="LogPath">Path of the current log file.</param>
-/// <param name="LaunchAtSignIn">Whether the Run registry value is set.</param>
+/// <param name="LaunchAtSignIn">
+/// The effective startup state, which is not the same as "a Run value exists".
+/// </param>
 public readonly record struct DiagnosticsContext(
     string TrayVersion,
     string OperatingSystem,
     string Architecture,
     string LaunchDescription,
     string LogPath,
-    bool LaunchAtSignIn);
+    StartupState LaunchAtSignIn);
 
 /// <summary>
 /// Builds the text behind "Copy diagnostics".
@@ -42,7 +44,7 @@ public static class DiagnosticsReport
         builder.AppendLine($"State since:    {FormatTimestamp(snapshot.StateSinceUtc)}");
         builder.AppendLine($"Restart count:  {snapshot.RestartCount} (total {snapshot.TotalRestartCount})");
         builder.AppendLine($"Next restart:   {FormatTimestamp(snapshot.NextRestartUtc)}");
-        builder.AppendLine($"Launch at sign-in: {(context.LaunchAtSignIn ? "on" : "off")}");
+        builder.AppendLine($"Launch at sign-in: {DescribeStartup(context.LaunchAtSignIn)}");
         builder.AppendLine($"Command:        {context.LaunchDescription}");
         builder.AppendLine($"Log:            {context.LogPath}");
         builder.AppendLine($"Last error:     {snapshot.LastError ?? "(none)"}");
@@ -61,6 +63,13 @@ public static class DiagnosticsReport
 
         return SecretRedactor.Redact(builder.ToString());
     }
+
+    private static string DescribeStartup(StartupState state) => state switch
+    {
+        StartupState.Enabled => "on",
+        StartupState.DisabledByWindows => "registered, but turned off in Windows",
+        _ => "off",
+    };
 
     private static string FormatTimestamp(DateTimeOffset? value)
         => value is null || value == DateTimeOffset.MinValue

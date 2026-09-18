@@ -5,33 +5,61 @@ using RemoteCommanderTray.Core;
 
 namespace RemoteCommanderTray.Windows;
 
-/// <summary>Creates real child processes, all sharing one kill-on-close job object.</summary>
+/// <summary>
+/// Creates real child processes, each owning its own kill-on-close job object.
+/// </summary>
+/// <remarks>
+/// A job per generation rather than one per factory: a shared job outlives every restart,
+/// so a descendant that survived its own root process would stay alive until the tray
+/// itself exited. Each <see cref="WindowsAgentProcess"/> now owns and terminates its own.
+/// </remarks>
 [SupportedOSPlatform("windows")]
-internal sealed class WindowsAgentProcessFactory : IAgentProcessFactory, IDisposable
+internal sealed class WindowsAgentProcessFactory : IAgentProcessFactory
 {
-    private readonly JobObject? _job;
+    private readonly Func<bool> _requireJobObject;
+    private readonly Action<string> _log;
 
-    public WindowsAgentProcessFactory(Action<string>? onJobUnavailable = null)
+    public WindowsAgentProcessFactory(Func<bool> requireJobObject, Action<string> log)
     {
-        try
-        {
-            _job = new JobObject();
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
-        {
-            // Without a job object the supervisor still kills the tree on exit; this only
-            // loses the backstop for a tray that is itself killed.
-            onJobUnavailable?.Invoke(ex.Message);
-            _job = null;
-        }
+        _requireJobObject = requireJobObject;
+        _log = log;
     }
 
-    public IAgentProcess Create(AgentLaunchSpec spec) => new WindowsAgentProcess(spec, _job);
+    public IAgentProcess Create(AgentLaunchSpec spec)
+        => new WindowsAgentProcess(spec, TryCreateJob(), _requireJobObject(), _log);
 
     public async Task<AgentCommandResult> RunOnceAsync(
         AgentLaunchSpec spec,
         TimeSpan timeout,
         CancellationToken cancellationToken = default)
+    {
+        // The logout one-shot gets the same bounded lifecycle as a long-running agent:
+        // its own job, terminated whether it finishes, times out, or throws.
+        var job = TryCreateJob();
+        if (job is null && _requireJobObject())
+        {
+            return new AgentCommandResult(
+                null,
+                "No job object is available, so the command was not run. "
+                + "Set \"requireJobObject\": false in settings.json to run it anyway.");
+        }
+
+        try
+        {
+            return await RunOnceCoreAsync(spec, timeout, job, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            job?.Terminate();
+            job?.Dispose();
+        }
+    }
+
+    private async Task<AgentCommandResult> RunOnceCoreAsync(
+        AgentLaunchSpec spec,
+        TimeSpan timeout,
+        JobObject? job,
+        CancellationToken cancellationToken)
     {
         using var process = new Process
         {
@@ -58,7 +86,20 @@ internal sealed class WindowsAgentProcessFactory : IAgentProcessFactory, IDispos
             return new AgentCommandResult(null, $"Could not start {spec.Description}.");
         }
 
-        _job?.TryAssign(process.Handle);
+        try
+        {
+            job?.Assign(process.Handle);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            _log($"Could not place the command in a job object: {ex.Message}");
+            if (_requireJobObject())
+            {
+                TryKill(process);
+                return new AgentCommandResult(null, "The command could not be placed in a job object.");
+            }
+        }
+
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
@@ -73,6 +114,19 @@ internal sealed class WindowsAgentProcessFactory : IAgentProcessFactory, IDispos
         {
             TryKill(process);
             return new AgentCommandResult(null, output + Environment.NewLine + "Timed out.");
+        }
+    }
+
+    private JobObject? TryCreateJob()
+    {
+        try
+        {
+            return new JobObject();
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or DllNotFoundException or EntryPointNotFoundException)
+        {
+            _log($"Job object unavailable: {ex.Message}");
+            return null;
         }
     }
 
@@ -95,6 +149,4 @@ internal sealed class WindowsAgentProcessFactory : IAgentProcessFactory, IDispos
             // Already gone.
         }
     }
-
-    public void Dispose() => _job?.Dispose();
 }

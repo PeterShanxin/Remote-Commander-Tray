@@ -104,7 +104,26 @@ public class AgentOutputParserTests
         var line = "\U0001F527 Received tool call 42: write_file "
                    + "{\"content\":\"Device marked as online\"} metadata: {}";
 
-        Assert.Equal(AgentSignalKind.None, new AgentOutputParser().Parse(line).Kind);
+        var signal = new AgentOutputParser().Parse(line);
+
+        Assert.Equal(AgentSignalKind.ToolCall, signal.Kind);
+        Assert.Equal("write_file", signal.Value);
+    }
+
+    [Fact]
+    public void The_line_after_a_completed_tool_call_is_treated_as_payload()
+    {
+        var parser = new AgentOutputParser();
+
+        Assert.Equal(AgentSignalKind.ToolCall, parser.Parse("\u2705 Tool call read_file completed:").Kind);
+
+        // The CLI emits the serialized result on the next line, with nothing to identify
+        // it by, so position is the only thing that can classify it.
+        var payload = parser.Parse(" {\"content\":\"Device marked as online\"}");
+        Assert.Equal(AgentSignalKind.ToolPayload, payload.Kind);
+
+        // ...and only that one line.
+        Assert.Equal(AgentSignalKind.DeviceOnline, parser.Parse("\U0001F50C Device marked as online").Kind);
     }
 
     [Fact]

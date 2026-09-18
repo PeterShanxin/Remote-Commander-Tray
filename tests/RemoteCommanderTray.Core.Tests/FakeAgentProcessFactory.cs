@@ -23,6 +23,15 @@ internal sealed class FakeAgentProcess : IAgentProcess
     /// <summary>Set to make <see cref="Start"/> throw, standing in for a bad command line.</summary>
     public Exception? StartFailure { get; init; }
 
+    /// <summary>
+    /// Output the process emits from inside <see cref="Start"/>, before it returns. The
+    /// real process begins reading stdout during Start, so this is not a contrived case.
+    /// </summary>
+    public IReadOnlyList<string> OutputDuringStart { get; init; } = [];
+
+    /// <summary>When set, the process exits from inside <see cref="Start"/>.</summary>
+    public int? ExitDuringStart { get; init; }
+
     public event EventHandler<AgentOutputLine>? OutputReceived;
 
     public event EventHandler<int?>? Exited;
@@ -36,6 +45,16 @@ internal sealed class FakeAgentProcess : IAgentProcess
 
         Started = true;
         ProcessId = Environment.ProcessId;
+
+        foreach (var line in OutputDuringStart)
+        {
+            Emit(line);
+        }
+
+        if (ExitDuringStart is { } code)
+        {
+            Crash(code);
+        }
     }
 
     public Task StopAsync(TimeSpan gracePeriod, CancellationToken cancellationToken = default)
@@ -72,6 +91,12 @@ internal sealed class FakeAgentProcessFactory : IAgentProcessFactory
 
     public Exception? NextStartFailure { get; set; }
 
+    /// <summary>Applied to the next process created.</summary>
+    public IReadOnlyList<string> NextOutputDuringStart { get; set; } = [];
+
+    /// <summary>Applied to the next process created.</summary>
+    public int? NextExitDuringStart { get; set; }
+
     public AgentCommandResult LogoutResult { get; set; } = new(0, "Logged out locally.");
 
     public List<AgentLaunchSpec> OneShotCommands { get; } = [];
@@ -84,7 +109,18 @@ internal sealed class FakeAgentProcessFactory : IAgentProcessFactory
 
     public IAgentProcess Create(AgentLaunchSpec spec)
     {
-        var process = new FakeAgentProcess(spec) { StartFailure = NextStartFailure };
+        var process = new FakeAgentProcess(spec)
+        {
+            StartFailure = NextStartFailure,
+            OutputDuringStart = NextOutputDuringStart,
+            ExitDuringStart = NextExitDuringStart,
+        };
+
+        // One-shot: only the next generation gets the injected behaviour, so a test can
+        // exercise a bad first start followed by a healthy restart.
+        NextOutputDuringStart = [];
+        NextExitDuringStart = null;
+
         _created.Enqueue(process);
         return process;
     }

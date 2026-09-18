@@ -97,6 +97,15 @@ public sealed class AgentStateMachine
                 AgentState.Error)
             : s);
 
+    /// <summary>
+    /// The remote session was lost while the process stayed alive, and the tray is about
+    /// to restart it. Distinct from an exit so the menu can say what actually happened.
+    /// </summary>
+    public void OnSessionLost(string reason)
+        => Update(s => Transition(
+            s with { ProcessRunning = false, VerificationUri = null, UserCode = null, LastError = reason },
+            AgentState.Error));
+
     /// <summary>Counts a completed restart for diagnostics.</summary>
     public void OnRestartPerformed()
         => Update(s => s with { TotalRestartCount = s.TotalRestartCount + 1 });

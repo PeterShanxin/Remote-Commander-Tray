@@ -61,8 +61,9 @@ internal static class Program
             + $"({System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture}, "
             + $"startedByWindows={startedByWindows}).");
 
-        // Keeps an enabled startup entry pointing at wherever the app lives now.
-        StartupRegistration.RefreshIfEnabled();
+        // Keeps a registered startup entry pointing at wherever the app lives now,
+        // without disturbing a disable the user applied in Windows.
+        StartupRegistration.RefreshIfRegistered();
 
         Application.ThreadException += (_, e) =>
             log.Write(LogSource.Tray, $"Unhandled UI exception: {e.Exception}");

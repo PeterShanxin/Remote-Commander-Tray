@@ -75,7 +75,7 @@ public class DiagnosticsReportTests
 
         var report = DiagnosticsReport.Build(
             snapshot,
-            new DiagnosticsContext("0.1.0", "Windows 11", "Arm64", "node index.js remote", @"C:\logs\agent.log", true));
+            new DiagnosticsContext("0.1.0", "Windows 11", "Arm64", "node index.js remote", @"C:\logs\agent.log", StartupState.Enabled));
 
         Assert.Contains("Tray:           0.1.0", report);
         Assert.Contains("State:          Online", report);
@@ -89,7 +89,7 @@ public class DiagnosticsReportTests
     {
         var report = DiagnosticsReport.Build(
             AgentSnapshot.Initial,
-            new DiagnosticsContext("0.1.0", "Windows 11", "X64", "cmd", "log", false),
+            new DiagnosticsContext("0.1.0", "Windows 11", "X64", "cmd", "log", StartupState.NotRegistered),
             ["12:00 [agent] access_token=abcdef0123456789"]);
 
         Assert.DoesNotContain("abcdef0123456789", report);

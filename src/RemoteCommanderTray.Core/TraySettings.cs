@@ -49,6 +49,29 @@ public sealed class TraySettings
     [JsonPropertyName("logRetainedFiles")]
     public int LogRetainedFiles { get; set; } = 3;
 
+    /// <summary>
+    /// Also write the agent's raw output to <c>logs/agent-verbose.log</c>.
+    /// </summary>
+    /// <remarks>
+    /// Off by default, and deliberately not part of "Copy diagnostics": the official CLI
+    /// serializes tool arguments and results, so raw output can contain the contents of
+    /// any file a remote tool call read. Turning this on is an explicit choice to keep a
+    /// file that may hold sensitive data.
+    /// </remarks>
+    [JsonPropertyName("verboseAgentLog")]
+    public bool VerboseAgentLog { get; set; }
+
+    /// <summary>
+    /// Refuse to launch an agent that could not be placed in a job object.
+    /// </summary>
+    /// <remarks>
+    /// The job object is what guarantees no orphaned agent survives the tray. Failing
+    /// closed is the safe default; it can be turned off for environments where nested job
+    /// objects are unavailable, at the cost of that guarantee.
+    /// </remarks>
+    [JsonPropertyName("requireJobObject")]
+    public bool RequireJobObject { get; set; } = true;
+
     /// <summary>Show desktop notifications for events that need the user.</summary>
     [JsonPropertyName("notificationsEnabled")]
     public bool NotificationsEnabled { get; set; } = true;
