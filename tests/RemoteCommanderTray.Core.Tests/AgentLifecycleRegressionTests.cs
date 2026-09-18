@@ -113,7 +113,7 @@ public class AgentLifecycleRegressionTests : IDisposable
     }
 
     [Fact]
-    public async Task A_lost_remote_session_notifies_and_restarts_even_though_nothing_exited()
+    public async Task A_lost_remote_session_notifies_and_waits_for_user_sign_in()
     {
         await _supervisor.StartAsync();
         var agent = _factory.Latest;
@@ -124,9 +124,11 @@ public class AgentLifecycleRegressionTests : IDisposable
         // exit to recover from, so the tray has to act on the message itself.
         agent.Emit("\n\u26A0\uFE0F  Remote session expired and could not be renewed.");
 
-        await WaitUntil(() => _factory.CreatedCount >= 2);
+        await WaitUntil(() => agent.StopRequested);
 
-        Assert.Contains(_notifications, n => n.Kind == NotificationKind.SessionExpired);
+        Assert.Single(_factory.Created);
+        Assert.Equal(AgentState.AuthenticationRequired, _supervisor.Snapshot.State);
+        Assert.Contains(_notifications, n => n.Kind == NotificationKind.AuthenticationRequired);
         Assert.True(agent.StopRequested);
     }
 
@@ -142,7 +144,7 @@ public class AgentLifecycleRegressionTests : IDisposable
 
         await Task.Delay(150);
 
-        Assert.Single(_notifications, n => n.Kind == NotificationKind.SessionExpired);
+        Assert.Single(_notifications, n => n.Kind == NotificationKind.AuthenticationRequired);
     }
 
     [Fact]
@@ -161,12 +163,12 @@ public class AgentLifecycleRegressionTests : IDisposable
 
         Assert.DoesNotContain("opaque_secret_value_1234", logged);
         Assert.DoesNotContain("C:\\secrets.json", logged);
-        Assert.Contains("tool call read_file", logged);
+        Assert.Contains("Tool activity", logged);
         Assert.Contains("tool result omitted", logged);
     }
 
     [Fact]
-    public async Task Status_lines_are_still_logged_verbatim()
+    public async Task Status_lines_are_logged_as_safe_canonical_events()
     {
         await _supervisor.StartAsync();
         _factory.Latest.Emit("\u23F3 Connecting to Remote MCP https://mcp.desktopcommander.app");
@@ -217,7 +219,7 @@ public class AgentLogPolicyTests
         const string line = "\u2705 Device ready:";
         var signal = new AgentOutputParser().Parse(line);
 
-        Assert.Equal(line, AgentLogPolicy.Sanitize(line, signal));
+        Assert.Equal("Device ready.", AgentLogPolicy.Sanitize(line, signal));
     }
 
     [Fact]
@@ -226,7 +228,7 @@ public class AgentLogPolicyTests
         const string line = "\U0001F527 Received tool call 7: read_file {\"path\":\"C:\\\\secrets\"} metadata: {}";
         var signal = new AgentOutputParser().Parse(line);
 
-        Assert.Equal("tool call read_file", AgentLogPolicy.Sanitize(line, signal));
+        Assert.Equal("Tool activity (arguments and results omitted).", AgentLogPolicy.Sanitize(line, signal));
     }
 
     [Fact]
@@ -235,7 +237,7 @@ public class AgentLogPolicyTests
         const string line = "\U0001F527 Received tool call 7: \"injected text\" {} metadata: {}";
         var signal = new AgentOutputParser().Parse(line);
 
-        Assert.Equal("tool call unknown", AgentLogPolicy.Sanitize(line, signal));
+        Assert.Equal("Tool activity (arguments and results omitted).", AgentLogPolicy.Sanitize(line, signal));
     }
 
     [Fact]
@@ -244,22 +246,22 @@ public class AgentLogPolicyTests
         const string line = "{\"content\":\"anything at all\"}";
         var signal = new AgentOutputParser().Parse(line);
 
-        Assert.StartsWith("<agent output omitted", AgentLogPolicy.Sanitize(line, signal));
+        Assert.StartsWith("<tool result omitted", AgentLogPolicy.Sanitize(line, signal));
     }
 
     [Fact]
-    public void Keeps_a_plain_unrecognized_message()
+    public void Omits_even_plain_unrecognized_messages()
     {
         const string line = "Failed to mark device offline: network unreachable";
         var signal = new AgentOutputParser().Parse(line);
 
-        Assert.Equal(line, AgentLogPolicy.Sanitize(line, signal));
+        Assert.StartsWith("<agent output omitted", AgentLogPolicy.Sanitize(line, signal));
     }
 
     [Fact]
     public void Drops_an_over_long_unrecognized_line()
     {
-        var line = new string('x', AgentLogPolicy.MaxUnrecognizedLength + 1);
+        var line = new string('x', 200_000);
 
         Assert.StartsWith("<agent output omitted", AgentLogPolicy.Sanitize(line, AgentSignal.None));
     }

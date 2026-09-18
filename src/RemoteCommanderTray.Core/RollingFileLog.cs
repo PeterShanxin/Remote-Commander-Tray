@@ -20,9 +20,9 @@ public enum LogSource
 /// fill the disk.
 /// </summary>
 /// <remarks>
-/// Every line passes through <see cref="SecretRedactor"/> first. The official CLI does
-/// not print tokens today, but the log is the one artifact users paste into bug
-/// reports, so scrubbing is cheap insurance.
+/// Regex redaction is defense in depth, not a privacy boundary. Ordinary agent input
+/// must first pass the allowlisted AgentLogPolicy; opt-in raw logs remain sensitive.
+/// Diagnostics never copies this file or logs left by earlier versions.
 /// </remarks>
 public sealed class RollingFileLog : IDisposable
 {

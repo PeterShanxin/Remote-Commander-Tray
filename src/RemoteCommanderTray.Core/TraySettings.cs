@@ -61,17 +61,6 @@ public sealed class TraySettings
     [JsonPropertyName("verboseAgentLog")]
     public bool VerboseAgentLog { get; set; }
 
-    /// <summary>
-    /// Refuse to launch an agent that could not be placed in a job object.
-    /// </summary>
-    /// <remarks>
-    /// The job object is what guarantees no orphaned agent survives the tray. Failing
-    /// closed is the safe default; it can be turned off for environments where nested job
-    /// objects are unavailable, at the cost of that guarantee.
-    /// </remarks>
-    [JsonPropertyName("requireJobObject")]
-    public bool RequireJobObject { get; set; } = true;
-
     /// <summary>Show desktop notifications for events that need the user.</summary>
     [JsonPropertyName("notificationsEnabled")]
     public bool NotificationsEnabled { get; set; } = true;

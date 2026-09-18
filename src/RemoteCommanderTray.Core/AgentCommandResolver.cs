@@ -65,9 +65,10 @@ public sealed class AgentCommandResolver
             var prefix = string.IsNullOrWhiteSpace(settings.AgentArguments)
                 ? string.Empty
                 : settings.AgentArguments.Trim() + " ";
-            return new AgentResolution(
-                new AgentLaunchSpec(exe, prefix + suffix, $"{Quote(exe)} {prefix}{suffix}"),
-                null);
+            var spec = exe.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase) || exe.EndsWith(".bat", StringComparison.OrdinalIgnoreCase)
+                ? WrapInCmd($"{Quote(exe)} {prefix}{suffix}")
+                : new AgentLaunchSpec(exe, prefix + suffix, $"{Quote(exe)} {prefix}{suffix}");
+            return new AgentResolution(spec, null);
         }
 
         var node = FindNode();

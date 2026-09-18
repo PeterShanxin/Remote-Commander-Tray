@@ -16,7 +16,7 @@ namespace RemoteCommanderTray.UI;
 internal sealed class TrayApplicationContext : ApplicationContext
 {
     private const int TooltipMaxLength = 63;
-    private const int DiagnosticsLogLines = 25;
+    private readonly System.Windows.Forms.Timer _menuTimer = new() { Interval = 1000 };
 
     private readonly AppPaths _paths;
     private readonly RollingFileLog _log;
@@ -41,7 +41,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _launchAtSignInItem;
 
     private AgentSnapshot _snapshot = AgentSnapshot.Initial;
-    private string? _pendingNotificationUri;
     private bool _busy;
     private bool _exiting;
 
@@ -61,12 +60,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _marshal = new Control();
         _marshal.CreateControl();
 
-        _processFactory = new WindowsAgentProcessFactory(
-            () => _settings().RequireJobObject,
-            message => _log.Write(LogSource.Tray, message));
+        _processFactory = new WindowsAgentProcessFactory();
 
         // Raw agent output can contain whatever a remote tool call read, so it only gets
-        // written when the user opts in, and never to the file diagnostics reads.
+        // written when the user opts in, and is never copied into diagnostics.
         _verboseLog = settings.VerboseAgentLog
             ? new RollingFileLog(paths.VerboseAgentLogFile, settings.LogMaxBytes, settings.LogRetainedFiles)
             : null;
@@ -120,7 +117,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             new ToolStripMenuItem("About", null, (_, _) => ShowAbout()),
             new ToolStripMenuItem("Exit", null, (_, _) => ExitApplication()),
         ]);
-        _menu.Opening += (_, _) => RefreshMenu();
+        _menu.Opening += (_, _) => { RefreshMenu(); _menuTimer.Start(); };
+        _menu.Closed += (_, _) => _menuTimer.Stop();
+        _menuTimer.Tick += (_, _) => RefreshMenu();
 
         _notifyIcon = new NotifyIcon
         {
@@ -179,16 +178,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>
-    /// Shows what will actually happen at the next sign-in. A Run entry that Windows has
+    /// Shows the observed registration and Windows approval state. A Run entry that Windows has
     /// switched off is not "on", and re-ticking it here would not turn it back on.
     /// </summary>
     private void RefreshStartupItem()
     {
         var state = StartupRegistration.GetState();
         _launchAtSignInItem.Checked = state == StartupState.Enabled;
-        _launchAtSignInItem.Text = state == StartupState.DisabledByWindows
-            ? "Launch at sign-in (turned off in Windows)"
-            : "Launch at sign-in";
+        _launchAtSignInItem.Text = state switch
+        {
+            StartupState.DisabledByWindows => "Launch at sign-in (turned off in Windows)",
+            StartupState.Unknown => "Launch at sign-in (check Windows settings)",
+            _ => "Launch at sign-in",
+        };
     }
 
     private static string GlyphFor(AgentState state) => state switch
@@ -211,7 +213,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return $"Retrying in {seconds}s (attempt {snapshot.RestartCount})";
         }
 
-        if (snapshot.State == AgentState.Error && !string.IsNullOrWhiteSpace(snapshot.LastError))
+        if (snapshot.State is AgentState.Error or AgentState.AuthenticationRequired && !string.IsNullOrWhiteSpace(snapshot.LastError))
         {
             return Truncate(snapshot.LastError, 60);
         }
@@ -300,19 +302,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _log.Path,
             StartupRegistration.GetState());
 
-        var report = DiagnosticsReport.Build(_snapshot, context, _log.Tail(DiagnosticsLogLines));
+        var report = DiagnosticsReport.Build(_snapshot, context);
         CopyToClipboard(report, "Diagnostics copied to the clipboard.");
     }
 
     private void ToggleLaunchAtSignIn()
     {
         var state = StartupRegistration.GetState();
-        if (state == StartupState.DisabledByWindows)
+        if (state is StartupState.DisabledByWindows or StartupState.Unknown)
         {
             // Windows owns this decision; writing the Run value again would not clear it.
             var open = MessageBox.Show(
-                "Windows has turned off startup for Remote Commander Tray.\n\n"
-                + "Only Windows can turn it back on. Open Startup Apps settings now?",
+                "Windows startup is disabled or its state could not be verified.\n\n"
+                + "Check or re-enable it in Windows Startup Apps settings now?",
                 "Launch at sign-in",
                 MessageBoxButtons.OKCancel,
                 MessageBoxIcon.Information);
@@ -329,7 +331,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (StartupRegistration.TrySet(target, out var error))
         {
             RefreshStartupItem();
-            _log.Write(LogSource.Tray, $"Launch at sign-in {(target ? "enabled" : "disabled")}.");
+            if (target && StartupRegistration.GetState() is StartupState.DisabledByWindows or StartupState.Unknown)
+                OpenStartupSettings();
+            _log.Write(LogSource.Tray, $"Startup registration updated; observed state: {StartupRegistration.GetState()}.");
             return;
         }
 
@@ -398,7 +402,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ShowNotification(TrayNotification notification)
     {
-        _pendingNotificationUri = notification.ActionUri;
         var icon = notification.Kind switch
         {
             NotificationKind.AuthenticationRequired => ToolTipIcon.Warning,
@@ -411,9 +414,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ShowStatusBalloon()
     {
-        _pendingNotificationUri = _snapshot.State == AgentState.AuthenticationRequired
-            ? _snapshot.VerificationUri
-            : null;
 
         _notifyIcon.ShowBalloonTip(
             5_000,
@@ -424,11 +424,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnBalloonClicked()
     {
-        var uri = _pendingNotificationUri;
-        _pendingNotificationUri = null;
+        // The auth notification may have preceded the CLI's URL line. Always use
+        // the current generation's live prompt, never a stale completed sign-in URL.
+        var uri = _snapshot.State == AgentState.AuthenticationRequired ? _snapshot.VerificationUri : null;
         if (!Shell.OpenUrl(uri))
         {
-            Shell.OpenFile(_log.Path);
+            if (_snapshot.State == AgentState.AuthenticationRequired) Reauthenticate();
+            else Shell.OpenFile(_log.Path);
         }
     }
 
@@ -436,6 +438,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void Run(Func<Task> command)
     {
+        if (_busy || _exiting) return;
         _busy = true;
         RefreshMenu();
         _ = RunCoreAsync(command);
@@ -449,7 +452,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch (Exception ex)
         {
-            _log.Write(LogSource.Tray, $"Command failed: {ex}");
+            _log.Write(LogSource.Tray, $"Command failed ({ex.GetType().Name}, HRESULT={ex.HResult:X8}).");
             OnUiThread(() => MessageBox.Show(
                 $"That did not work:\n{ex.Message}",
                 "Remote Commander Tray",
@@ -517,6 +520,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            _menuTimer.Dispose();
+            _supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
             _verboseLog?.Dispose();

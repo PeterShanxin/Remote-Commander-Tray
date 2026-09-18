@@ -1,28 +1,16 @@
 namespace RemoteCommanderTray.Core;
 
 /// <summary>
-/// The tray's process supervisor: it owns the one and only
-/// <c>desktop-commander remote</c> child, restarts it when it dies, and never restarts
-/// it for anything else.
+/// Owns one agent generation. Commands are serialized; callbacks must still belong to
+/// that generation when they act. Network recovery belongs to the official CLI.
 /// </summary>
-/// <remarks>
-/// <para>
-/// The official device already handles heartbeats, stale connections and channel
-/// recreation. So a dropped channel moves the icon to "Reconnecting" and is left alone;
-/// only a process exit - or an explicit user action - touches the process.
-/// </para>
-/// <para>
-/// Every public method serializes on one semaphore, which is what guarantees "at most
-/// one agent" even when a restart timer and a menu click land at the same moment.
-/// </para>
-/// </remarks>
 public sealed class AgentSupervisor : IAsyncDisposable
 {
     private static readonly TimeSpan StopGracePeriod = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan HealthInterval = TimeSpan.FromSeconds(15);
-
     private readonly AgentStateMachine _machine;
     private readonly AgentOutputParser _parser = new();
+    private readonly AgentOutputParser _errorParser = new();
     private readonly IAgentProcessFactory _factory;
     private readonly AgentCommandResolver _resolver;
     private readonly Func<TraySettings> _settings;
@@ -30,14 +18,19 @@ public sealed class AgentSupervisor : IAsyncDisposable
     private readonly RollingFileLog? _verboseLog;
     private readonly RestartBackoff _backoff;
     private readonly SemaphoreSlim _mutex = new(1, 1);
+    // Never hold this lock across an await or process teardown. It makes checking an
+    // output's generation, parsing it and applying its state one atomic operation.
+    private readonly object _callbackGate = new();
+    private readonly object _backgroundGate = new();
+    private readonly HashSet<Task> _background = [];
     private readonly Func<DateTimeOffset> _clock;
     private readonly Timer _healthTimer;
-
-    // Read from callback threads without the mutex, so the reference must be published.
     private volatile IAgentProcess? _process;
     private CancellationTokenSource? _restartCts;
+    private Task? _disposeTask;
     private bool _agentWanted;
-    private bool _disposed;
+    private volatile bool _disposed;
+    private bool _cleanupFailed;
     private DateTimeOffset _runStartedUtc;
     private int _consecutiveFailures;
     private bool _stallNotified;
@@ -47,13 +40,9 @@ public sealed class AgentSupervisor : IAsyncDisposable
     private string _launchDescription = "(not resolved)";
 
     public AgentSupervisor(
-        AgentStateMachine machine,
-        IAgentProcessFactory factory,
-        AgentCommandResolver resolver,
-        Func<TraySettings> settings,
-        RollingFileLog log,
-        Func<DateTimeOffset>? clock = null,
-        RestartBackoff? backoff = null,
+        AgentStateMachine machine, IAgentProcessFactory factory,
+        AgentCommandResolver resolver, Func<TraySettings> settings, RollingFileLog log,
+        Func<DateTimeOffset>? clock = null, RestartBackoff? backoff = null,
         RollingFileLog? verboseLog = null)
     {
         _machine = machine;
@@ -64,61 +53,44 @@ public sealed class AgentSupervisor : IAsyncDisposable
         _verboseLog = verboseLog;
         _clock = clock ?? (() => DateTimeOffset.UtcNow);
         _backoff = backoff ?? new RestartBackoff();
-
-        _machine.Changed += (_, snapshot) => OnSnapshotChanged(snapshot);
+        _machine.Changed += OnMachineChanged;
         _healthTimer = new Timer(_ => RunHealthCheck(), null, HealthInterval, HealthInterval);
     }
 
-    /// <summary>Raised when the visible state changes.</summary>
     public event EventHandler<AgentSnapshot>? Changed;
-
-    /// <summary>Raised when the user needs to be told something.</summary>
     public event EventHandler<TrayNotification>? Notification;
-
     public AgentSnapshot Snapshot => _machine.Snapshot;
-
-    /// <summary>The resolved command line, for diagnostics.</summary>
     public string LaunchDescription => _launchDescription;
+    public bool IsRunning => _process is { HasExited: false };
 
-    /// <summary>Applies the startup preference: start the agent, or sit idle in Stopped.</summary>
     public async Task InitializeAsync()
     {
         if (_settings().StartAgentOnLaunch)
         {
             await StartAsync().ConfigureAwait(false);
         }
-        else
-        {
-            _log.Write(LogSource.Tray, "Agent autostart disabled by settings; staying stopped.");
-            _machine.SetAgentWanted(false);
-        }
     }
 
-    /// <summary>Starts the agent if it is not already running.</summary>
     public async Task StartAsync()
     {
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
-            _agentWanted = true;
-            _machine.SetAgentWanted(true);
-            _backoff.Reset();
-            _consecutiveFailures = 0;
-            _startFailureNotified = false;
-            StartCore();
+            if (_disposed) return;
+            CancelPendingRestart();
+            WantAgent();
+            ResetFailures();
+            await StartCoreAsync().ConfigureAwait(false);
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 
-    /// <summary>Stops the agent and keeps it stopped until the user says otherwise.</summary>
     public async Task StopAsync()
     {
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
+            if (_disposed) return;
             _agentWanted = false;
             _machine.SetAgentWanted(false);
             CancelPendingRestart();
@@ -126,270 +98,209 @@ public sealed class AgentSupervisor : IAsyncDisposable
             _machine.OnProcessExited(null, userRequested: true);
             _log.Write(LogSource.Tray, "Agent stopped by user.");
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 
-    /// <summary>Stops and immediately starts the agent, clearing the restart backoff.</summary>
     public async Task RestartAsync()
     {
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
-            _log.Write(LogSource.Tray, "Restarting agent (user request).");
-            _agentWanted = true;
-            _machine.SetAgentWanted(true);
+            if (_disposed) return;
             CancelPendingRestart();
             await StopCoreAsync().ConfigureAwait(false);
-            _backoff.Reset();
-            _consecutiveFailures = 0;
-            _startFailureNotified = false;
+            WantAgent();
+            ResetFailures();
             _machine.OnRestartPerformed();
-            StartCore();
+            await StartCoreAsync().ConfigureAwait(false);
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 
-    /// <summary>
-    /// Stops the agent, asks the official CLI to drop its saved credentials, then starts
-    /// it again so the official OAuth flow runs.
-    /// </summary>
-    /// <remarks>
-    /// The tray does not implement any part of the flow: it shells out to
-    /// <c>remote --logout</c> and lets the CLI open the browser. It never reads, writes
-    /// or copies <c>device.json</c>.
-    /// </remarks>
+    /// <summary>Only the official CLI may remove its credentials. A failed logout is
+    /// not reported as successful sign-in and never starts a second agent.</summary>
     public async Task ReauthenticateAsync()
     {
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
-            _log.Write(LogSource.Tray, "Re-authentication requested.");
-            _agentWanted = true;
-            _machine.SetAgentWanted(true);
+            if (_disposed) return;
             CancelPendingRestart();
             await StopCoreAsync().ConfigureAwait(false);
+            WantAgent();
+            var resolution = _resolver.Resolve(AgentCommand.Logout, _settings());
+            if (resolution.Spec is null) { ReportUnavailable(resolution.Problem); return; }
 
-            var settings = _settings();
-            var resolution = _resolver.Resolve(AgentCommand.Logout, settings);
-            if (resolution.Spec is null)
+            AgentCommandResult result;
+            try
             {
-                ReportUnavailable(resolution.Problem);
+                result = await _factory.RunOnceAsync(resolution.Spec, TimeSpan.FromSeconds(30))
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _log.Write(LogSource.Tray, $"Logout failed ({ex.GetType().Name}).");
+                _machine.OnSessionLost("Sign-out failed. Retry Re-authenticate.");
                 return;
             }
 
-            _log.Write(LogSource.Tray, $"Running logout: {resolution.Spec.Description}");
-            var result = await _factory
-                .RunOnceAsync(resolution.Spec, TimeSpan.FromSeconds(30))
-                .ConfigureAwait(false);
-
             var logoutParser = new AgentOutputParser();
-            foreach (var line in SplitLines(result.Output))
+            foreach (var line in result.Output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
             {
                 _log.Write(LogSource.Agent, AgentLogPolicy.Sanitize(line, logoutParser.Parse(line)));
                 _verboseLog?.Write(LogSource.Agent, line);
             }
+            if (!result.Succeeded)
+            {
+                _log.Write(LogSource.Tray, $"Logout did not succeed (exit {result.ExitCode?.ToString() ?? "unknown"}).");
+                _machine.OnSessionLost("Sign-out did not complete. Retry Re-authenticate.");
+                return;
+            }
 
-            _log.Write(
-                LogSource.Tray,
-                result.Succeeded
-                    ? "Logout completed; saved credentials removed by the official CLI."
-                    : $"Logout exited with code {result.ExitCode?.ToString() ?? "n/a"}; starting the agent anyway.");
-
-            _backoff.Reset();
-            _consecutiveFailures = 0;
-            _startFailureNotified = false;
-            _authNotified = true;
-            StartCore();
-
-            Raise(new TrayNotification(
-                NotificationKind.ReauthenticationStarted,
+            ResetFailures();
+            lock (_callbackGate) { _authNotified = true; }
+            Raise(new TrayNotification(NotificationKind.ReauthenticationStarted,
                 "Remote Commander - sign-in needed",
-                "Desktop Commander is signing in again. Finish the sign-in in your browser.",
-                _machine.Snapshot.VerificationUri));
+                "Finish the official Desktop Commander sign-in in your browser. "
+                + "Use Open sign-in page in the tray if no browser opens."));
+            await StartCoreAsync().ConfigureAwait(false);
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 
-    /// <summary>True when a child process currently exists.</summary>
-    public bool IsRunning => _process is { HasExited: false };
-
-    // --- internals -------------------------------------------------------
-
-    private void StartCore()
+    private void WantAgent()
     {
-        if (_process is { HasExited: false })
+        _agentWanted = true;
+        _machine.SetAgentWanted(true);
+        lock (_callbackGate) { _authNotified = false; }
+    }
+
+    private void ResetFailures()
+    {
+        _backoff.Reset();
+        _consecutiveFailures = 0;
+        _startFailureNotified = false;
+    }
+
+    // Caller holds _mutex. The prior generation must be drained even if its root
+    // already died and its exit callback is still waiting for this same semaphore.
+    private async Task StartCoreAsync()
+    {
+        if (_disposed || IsRunning) return;
+        if (_cleanupFailed)
         {
+            ReportUnavailable("Previous agent cleanup failed. Exit the tray before trying again.");
             return;
         }
-
-        var settings = _settings();
-        var resolution = _resolver.Resolve(AgentCommand.Remote, settings);
-        if (resolution.Spec is null)
-        {
-            ReportUnavailable(resolution.Problem);
-            return;
-        }
-
-        _launchDescription = resolution.Spec.Description;
-        _parser.Reset();
-        _sessionLossHandled = false;
-
-        var process = _factory.Create(resolution.Spec);
-
-        // The generation and its state are published *before* Start, because the real
-        // process begins raising exit and output events from inside Start. Registering
-        // afterwards lost an immediate exit for good, and let a late "Starting" overwrite
-        // an Online that early output had already established.
-        _process = process;
-        _runStartedUtc = _clock();
-        _stallNotified = false;
-        _machine.OnProcessStarted();
-
-        process.OutputReceived += HandleOutput;
-        process.Exited += HandleExited;
-
+        await StopCoreAsync().ConfigureAwait(false);
+        IAgentProcess? process = null;
         try
         {
+            var resolution = _resolver.Resolve(AgentCommand.Remote, _settings());
+            if (resolution.Spec is null) { ReportUnavailable(resolution.Problem); return; }
+            _launchDescription = resolution.Spec.Description;
+            process = _factory.Create(resolution.Spec);
+            lock (_callbackGate)
+            {
+                _parser.Reset();
+                _errorParser.Reset();
+                _sessionLossHandled = false;
+                _process = process;
+                _runStartedUtc = _clock();
+                _stallNotified = false;
+                _machine.OnProcessStarted();
+                process.OutputReceived += HandleOutput;
+                process.Exited += HandleExited;
+            }
             process.Start();
+            _log.Write(LogSource.Tray, $"Agent started (pid {process.ProcessId?.ToString() ?? "unknown"}).");
         }
         catch (Exception ex)
         {
-            process.OutputReceived -= HandleOutput;
-            process.Exited -= HandleExited;
-            if (ReferenceEquals(_process, process))
-            {
-                _process = null;
-            }
-
-            process.Dispose();
-            _log.Write(LogSource.Tray, $"Failed to launch agent: {ex.Message}");
+            await StopCoreAsync().ConfigureAwait(false);
+            // Do not copy arbitrary command arguments or exception text to the ordinary log.
+            _log.Write(LogSource.Tray, $"Failed to launch agent ({ex.GetType().Name}).");
             _machine.OnProcessExited(null, userRequested: false);
             _consecutiveFailures++;
-            NotifyStartFailureIfNeeded(ex.Message);
+            NotifyStartFailureIfNeeded();
             ScheduleRestart();
-            return;
         }
-
-        _log.Write(
-            LogSource.Tray,
-            $"Agent started (pid {process.ProcessId?.ToString() ?? "?"}): {resolution.Spec.Description}");
     }
 
     private async Task StopCoreAsync()
     {
-        var process = _process;
-        if (process is null)
+        IAgentProcess? process;
+        lock (_callbackGate)
         {
-            return;
+            process = _process;
+            _process = null;
+            if (process is not null)
+            {
+                process.OutputReceived -= HandleOutput;
+                process.Exited -= HandleExited;
+            }
         }
-
-        _process = null;
-        process.OutputReceived -= HandleOutput;
-        process.Exited -= HandleExited;
-
+        if (process is null) return;
         try
         {
-            await process.StopAsync(StopGracePeriod).ConfigureAwait(false);
+            try { await process.StopAsync(StopGracePeriod).ConfigureAwait(false); }
+            finally { process.Dispose(); }
         }
-        catch (Exception ex)
+        catch
         {
-            _log.Write(LogSource.Tray, $"Error while stopping agent: {ex.Message}");
-        }
-        finally
-        {
-            process.Dispose();
+            _cleanupFailed = true;
+            _agentWanted = false;
+            _machine.SetAgentWanted(false);
+            CancelPendingRestart();
+            _machine.OnProcessExited(null, userRequested: false);
+            Raise(new TrayNotification(NotificationKind.StartFailure,
+                "Remote Commander - cleanup failed",
+                "The prior agent could not be fully cleaned up. No replacement will be started. Exit the tray."));
+            throw;
         }
     }
 
     private void HandleOutput(object? sender, AgentOutputLine line)
     {
-        if (!ReferenceEquals(sender, _process))
+        lock (_callbackGate)
         {
-            // Output from a generation we have already replaced. Acting on it would let a
-            // dying agent drive the icon for the one that succeeded it.
-            return;
-        }
-
-        var signal = _parser.Parse(line.Text);
-        var source = line.IsError ? LogSource.AgentError : LogSource.Agent;
-
-        _log.Write(source, AgentLogPolicy.Sanitize(line.Text, signal));
-        _verboseLog?.Write(source, line.Text);
-
-        _machine.Apply(signal);
-
-        if (signal.Kind == AgentSignalKind.SessionExpired)
-        {
-            HandleSessionLoss();
+            if (_disposed || sender is not IAgentProcess source || !ReferenceEquals(source, _process)) return;
+            // stdout/stderr have independent multiline auth/result prompts, but state
+            // mutations are serialized. No unbounded per-line Task.Run queue.
+            var parser = line.IsError ? _errorParser : _parser;
+            var signal = parser.Parse(line.Text);
+            var logSource = line.IsError ? LogSource.AgentError : LogSource.Agent;
+            _log.Write(logSource, AgentLogPolicy.Sanitize(line.Text, signal));
+            _verboseLog?.Write(logSource, line.Text);
+            // The UI can surface categories, not arbitrary failure text from tool output.
+            signal = AgentLogPolicy.SafeStateSignal(signal);
+            _machine.Apply(signal);
+            if (signal.Kind == AgentSignalKind.SessionExpired && !_sessionLossHandled)
+            {
+                _sessionLossHandled = true;
+                QueueCallback(() => OnSessionLostAsync(source));
+            }
         }
     }
 
-    /// <summary>
-    /// The official device prints "Remote session expired and could not be renewed",
-    /// stops its heartbeat, and then stays alive telling the user to restart it. Nothing
-    /// exits, so nothing else here would ever notice.
-    /// </summary>
-    private void HandleSessionLoss()
-    {
-        if (_sessionLossHandled)
-        {
-            // Once per generation: the CLI can print this more than once.
-            return;
-        }
-
-        _sessionLossHandled = true;
-        _log.Write(LogSource.Tray, "Remote session expired; restarting the agent to recover.");
-        Raise(new TrayNotification(
-            NotificationKind.SessionExpired,
-            "Remote Commander - session expired",
-            "Desktop Commander lost its Remote MCP session and is being restarted. "
-            + "If this keeps happening, use Re-authenticate to sign in again."));
-
-        _ = Task.Run(RecoverFromSessionLossAsync);
-    }
-
-    private async Task RecoverFromSessionLossAsync()
+    private async Task OnSessionLostAsync(IAgentProcess source)
     {
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_disposed || !_agentWanted)
-            {
-                return;
-            }
-
+            if (_disposed || !_agentWanted || !ReferenceEquals(source, _process)) return;
             CancelPendingRestart();
             await StopCoreAsync().ConfigureAwait(false);
-            _machine.OnSessionLost("Remote session expired; restarting the agent.");
-
-            // Goes through the normal backoff so a session that keeps dropping cannot
-            // turn into a restart loop.
-            _consecutiveFailures++;
-            ScheduleRestart();
+            _machine.OnSessionLost("Remote session expired. Use Re-authenticate to sign in again.");
+            // This is a user-action boundary, not a crash: do not repeatedly launch
+            // browsers, clear credentials, or retry a revoked session automatically.
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 
     private void HandleExited(object? sender, int? exitCode)
     {
-        if (sender is not IAgentProcess source)
-        {
-            return;
-        }
-
-        _ = Task.Run(() => OnAgentExitedAsync(source, exitCode));
+        if (sender is IAgentProcess source) QueueCallback(() => OnAgentExitedAsync(source, exitCode));
     }
 
     private async Task OnAgentExitedAsync(IAgentProcess source, int? exitCode)
@@ -397,91 +308,46 @@ public sealed class AgentSupervisor : IAsyncDisposable
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
-            // Re-check identity under the lock. This callback can sit in the queue while a
-            // Restart or Re-authenticate installs a different process; acting on whatever
-            // _process happens to hold now would detach the replacement and start a third
-            // agent alongside it.
-            if (!ReferenceEquals(_process, source))
+            if (_disposed || !ReferenceEquals(source, _process)) return;
+            var waitingForAuthentication = Snapshot.State == AgentState.AuthenticationRequired;
+            await StopCoreAsync().ConfigureAwait(false);
+            _log.Write(LogSource.Tray, $"Agent exited (code {exitCode?.ToString() ?? "unknown"}).");
+            if (waitingForAuthentication && _agentWanted)
             {
+                _machine.OnSessionLost("Sign-in did not complete. Use Re-authenticate to retry.");
                 return;
             }
-
-            var process = source;
-            _process = null;
-            process.OutputReceived -= HandleOutput;
-            process.Exited -= HandleExited;
-            process.Dispose();
-
-            _log.Write(
-                LogSource.Tray,
-                $"Agent exited with code {exitCode?.ToString() ?? "unknown"}.");
-            _machine.OnProcessExited(exitCode, userRequested: false);
-
-            if (!_agentWanted || _disposed)
-            {
-                return;
-            }
-
-            var settings = _settings();
-            var ranFor = _clock() - _runStartedUtc;
-            if (ranFor < TimeSpan.FromSeconds(settings.HealthyRunSeconds))
-            {
-                _consecutiveFailures++;
-            }
-            else
-            {
-                // The run was long enough to count as healthy; treat this as a fresh streak.
-                _consecutiveFailures = 1;
-                _backoff.Reset();
-                _startFailureNotified = false;
-            }
-
-            NotifyStartFailureIfNeeded(_machine.Snapshot.LastError);
+            _machine.OnProcessExited(exitCode, userRequested: !_agentWanted);
+            if (!_agentWanted) return;
+            if (_clock() - _runStartedUtc >= TimeSpan.FromSeconds(_settings().HealthyRunSeconds)) ResetFailures();
+            _consecutiveFailures++;
+            NotifyStartFailureIfNeeded();
             ScheduleRestart();
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 
     private void ScheduleRestart()
     {
         CancelPendingRestart();
-
+        if (_disposed || !_agentWanted || _cleanupFailed) return;
         var delay = _backoff.NextDelay();
-        var due = _clock() + delay;
-        _machine.OnRestartScheduled(_backoff.Attempt, due);
-        _log.Write(LogSource.Tray, $"Restarting agent in {delay.TotalSeconds:0}s (attempt {_backoff.Attempt}).");
-
+        _machine.OnRestartScheduled(_backoff.Attempt, _clock() + delay);
+        _log.Write(LogSource.Tray, $"Restart scheduled in {delay.TotalSeconds:0}s (attempt {_backoff.Attempt}).");
         var cts = new CancellationTokenSource();
+        var token = cts.Token; // Capture before any other command can dispose the CTS.
         _restartCts = cts;
-        _ = Task.Run(async () =>
+        QueueCallback(async () =>
         {
-            try
-            {
-                await Task.Delay(delay, cts.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-
+            await Task.Delay(delay, token).ConfigureAwait(false);
             await _mutex.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (cts.IsCancellationRequested || !_agentWanted || _disposed)
-                {
-                    return;
-                }
-
+                if (token.IsCancellationRequested || _disposed || !_agentWanted || !ReferenceEquals(cts, _restartCts)) return;
                 _machine.OnRestartPerformed();
-                StartCore();
+                await StartCoreAsync().ConfigureAwait(false);
             }
-            finally
-            {
-                _mutex.Release();
-            }
+            finally { _mutex.Release(); }
         });
     }
 
@@ -489,163 +355,109 @@ public sealed class AgentSupervisor : IAsyncDisposable
     {
         var cts = _restartCts;
         _restartCts = null;
-        if (cts is null)
-        {
-            return;
-        }
-
-        try
-        {
-            cts.Cancel();
-        }
-        catch (ObjectDisposedException)
-        {
-            // Already finished.
-        }
-
+        if (cts is null) return;
+        cts.Cancel();
         cts.Dispose();
+        _machine.ClearPendingRestart();
+    }
+
+    private void QueueCallback(Func<Task> work)
+    {
+        lock (_backgroundGate)
+        {
+            if (_disposed) return;
+            var task = Task.Run(async () =>
+            {
+                try { await work().ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
+                {
+                    _log.Write(LogSource.Tray, $"Lifecycle callback failed ({ex.GetType().Name}).");
+                }
+            });
+            _background.Add(task);
+            _ = task.ContinueWith(t =>
+            {
+                lock (_backgroundGate) { _background.Remove(t); }
+            }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        }
     }
 
     private void RunHealthCheck()
     {
-        if (_disposed)
-        {
-            return;
-        }
-
-        // Skip this tick rather than queue behind a command: the health check shares the
-        // backoff and failure counters with the restart path, and a tick that waited
-        // would only re-check state the command just changed.
-        if (!_mutex.Wait(0))
-        {
-            return;
-        }
-
+        if (_disposed || !_mutex.Wait(0)) return;
         try
         {
-            RunHealthCheckCore();
+            if (_disposed) return;
+            var snapshot = Snapshot;
+            if (snapshot.State == AgentState.Online)
+            {
+                _stallNotified = false;
+                if (_clock() - snapshot.StateSinceUtc >= TimeSpan.FromSeconds(_settings().HealthyRunSeconds)) ResetFailures();
+                return;
+            }
+            if (!_agentWanted || !snapshot.ProcessRunning || _stallNotified ||
+                snapshot.State is not (AgentState.Connecting or AgentState.Starting)) return;
+            var elapsed = _clock() - snapshot.StateSinceUtc;
+            if (elapsed < TimeSpan.FromMinutes(_settings().StalledConnectionMinutes)) return;
+            _stallNotified = true;
+            _machine.OnConnectionStalled(elapsed);
+            Raise(new TrayNotification(NotificationKind.ConnectionStalled, "Remote Commander - not connected",
+                "The device has not come online. Try Restart connection, or Re-authenticate if sign-in expired."));
         }
-        finally
-        {
-            _mutex.Release();
-        }
+        finally { _mutex.Release(); }
     }
 
-    private void RunHealthCheckCore()
+    private void OnMachineChanged(object? sender, AgentSnapshot snapshot)
     {
-        var snapshot = _machine.Snapshot;
-        var settings = _settings();
-        var now = _clock();
-
-        if (snapshot.State == AgentState.Online)
+        lock (_callbackGate)
         {
-            _stallNotified = false;
-            _startFailureNotified = false;
-            _consecutiveFailures = 0;
-            _backoff.Reset();
-            return;
-        }
-
-        if (!_agentWanted || !snapshot.ProcessRunning || _stallNotified)
-        {
-            return;
-        }
-
-        if (snapshot.State is not (AgentState.Connecting or AgentState.Starting))
-        {
-            return;
-        }
-
-        var stalledAfter = TimeSpan.FromMinutes(settings.StalledConnectionMinutes);
-        var elapsed = now - snapshot.StateSinceUtc;
-        if (elapsed < stalledAfter)
-        {
-            return;
-        }
-
-        _stallNotified = true;
-        _machine.OnConnectionStalled(elapsed);
-        _log.Write(LogSource.Tray, $"Connection has not reached Online for {AgentStateMachine.FormatDuration(elapsed)}.");
-        Raise(new TrayNotification(
-            NotificationKind.ConnectionStalled,
-            "Remote Commander - not connected",
-            $"The device has not come online for {AgentStateMachine.FormatDuration(elapsed)}. "
-            + "Try Restart connection, or Re-authenticate if sign-in expired."));
-    }
-
-    private void OnSnapshotChanged(AgentSnapshot snapshot)
-    {
-        if (snapshot.State == AgentState.AuthenticationRequired)
-        {
-            if (!_authNotified)
+            if (snapshot.State == AgentState.AuthenticationRequired && !_authNotified)
             {
                 _authNotified = true;
-                Raise(new TrayNotification(
-                    NotificationKind.AuthenticationRequired,
+                Raise(new TrayNotification(NotificationKind.AuthenticationRequired,
                     "Remote Commander - sign-in required",
-                    "Desktop Commander needs you to sign in. Your browser should open automatically; "
-                    + "if it does not, use \"Open sign-in page\" in the tray menu.",
+                    "Desktop Commander needs you to sign in. Use Open sign-in page, or Re-authenticate if the session expired.",
                     snapshot.VerificationUri));
             }
+            else if (snapshot.State == AgentState.Online) _authNotified = false;
+            Changed?.Invoke(this, snapshot);
         }
-        else if (snapshot.State == AgentState.Online)
-        {
-            _authNotified = false;
-        }
-
-        Changed?.Invoke(this, snapshot);
     }
 
-    private void NotifyStartFailureIfNeeded(string? detail)
+    private void NotifyStartFailureIfNeeded()
     {
-        var threshold = _settings().StartFailureAlertThreshold;
-        if (_consecutiveFailures < threshold || _startFailureNotified)
-        {
-            return;
-        }
-
+        if (_consecutiveFailures < _settings().StartFailureAlertThreshold || _startFailureNotified) return;
         _startFailureNotified = true;
-        Raise(new TrayNotification(
-            NotificationKind.StartFailure,
-            "Remote Commander - agent keeps failing",
-            $"The Desktop Commander agent failed to stay running {_consecutiveFailures} times in a row. "
-            + (string.IsNullOrWhiteSpace(detail) ? "Open logs for details." : detail)));
+        Raise(new TrayNotification(NotificationKind.StartFailure, "Remote Commander - agent keeps failing",
+            $"The Desktop Commander agent failed to stay running {_consecutiveFailures} times in a row. Open logs for details."));
     }
 
     private void ReportUnavailable(string? problem)
     {
-        var message = problem ?? "Desktop Commander could not be found.";
-        _log.Write(LogSource.Tray, message);
         _machine.OnProcessExited(null, userRequested: false);
-        Raise(new TrayNotification(
-            NotificationKind.AgentUnavailable,
-            "Remote Commander - agent not found",
-            message));
+        _log.Write(LogSource.Tray, "Agent launch unavailable. Check installation and configuration.");
+        Raise(new TrayNotification(NotificationKind.AgentUnavailable, "Remote Commander - agent unavailable",
+            problem ?? "Desktop Commander could not be found."));
     }
 
     private void Raise(TrayNotification notification)
     {
-        if (!_settings().NotificationsEnabled)
-        {
-            return;
-        }
-
-        Notification?.Invoke(this, notification);
+        if (_settings().NotificationsEnabled) Notification?.Invoke(this, notification);
     }
 
-    private static IEnumerable<string> SplitLines(string text)
-        => text.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries);
-
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (_disposed)
+        lock (_backgroundGate)
         {
-            return;
+            _disposed = true;
+            return new ValueTask(_disposeTask ??= Task.Run(DisposeCoreAsync));
         }
+    }
 
-        _disposed = true;
+    private async Task DisposeCoreAsync()
+    {
         await _healthTimer.DisposeAsync().ConfigureAwait(false);
-
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -653,11 +465,12 @@ public sealed class AgentSupervisor : IAsyncDisposable
             CancelPendingRestart();
             await StopCoreAsync().ConfigureAwait(false);
         }
-        finally
-        {
-            _mutex.Release();
-        }
-
-        _mutex.Dispose();
+        finally { _mutex.Release(); }
+        Task[] pending;
+        lock (_backgroundGate) { pending = [.. _background]; }
+        await Task.WhenAll(pending).ConfigureAwait(false);
+        _machine.Changed -= OnMachineChanged;
+        // SemaphoreSlim never allocates an OS handle here. Leave it usable for a public
+        // command already queued before disposal; its disposed guard will make it inert.
     }
 }

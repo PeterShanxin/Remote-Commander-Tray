@@ -50,6 +50,11 @@ public sealed partial class AgentOutputParser
             return new AgentSignal(AgentSignalKind.ToolPayload);
         }
 
+        // JSON/stringified tool output must not become a status prefix when decoration
+        // is stripped. Keep metadata out even if a result marker was lost/interleaved.
+        var trimmed = rawLine.TrimStart();
+        if (trimmed.StartsWith('{') || trimmed.StartsWith('[') || trimmed.StartsWith('"'))
+            return new AgentSignal(AgentSignalKind.ToolPayload);
         var line = Normalize(rawLine);
         if (line.Length == 0)
         {
@@ -114,10 +119,12 @@ public sealed partial class AgentOutputParser
             || line.StartsWith("Starting device authorization flow", StringComparison.OrdinalIgnoreCase)
             || line.StartsWith("Please complete authentication", StringComparison.OrdinalIgnoreCase))
         {
+            _awaitingVerificationUri = _awaitingUserCode = false;
             return new AgentSignal(AgentSignalKind.AuthenticationStarted);
         }
 
-        if (line.StartsWith("Verify this device in your browser", StringComparison.OrdinalIgnoreCase))
+        if (line.StartsWith("Verify this device in your browser", StringComparison.OrdinalIgnoreCase)
+            || line.StartsWith("Open this URL in your browser", StringComparison.OrdinalIgnoreCase))
         {
             _awaitingVerificationUri = true;
             return AgentSignal.None;
@@ -131,7 +138,8 @@ public sealed partial class AgentOutputParser
                 : AgentSignal.None;
         }
 
-        if (line.StartsWith("Make sure the code matches", StringComparison.OrdinalIgnoreCase))
+        if (line.StartsWith("Make sure the code matches", StringComparison.OrdinalIgnoreCase)
+            || line.StartsWith("Enter this code when prompted", StringComparison.OrdinalIgnoreCase))
         {
             _awaitingUserCode = true;
             return AgentSignal.None;
@@ -139,6 +147,7 @@ public sealed partial class AgentOutputParser
 
         if (line.StartsWith("Authorization successful", StringComparison.OrdinalIgnoreCase))
         {
+            _awaitingVerificationUri = _awaitingUserCode = false;
             return new AgentSignal(AgentSignalKind.AuthorizationSucceeded);
         }
 

@@ -19,8 +19,17 @@ env:
 
 jobs:
   test:
-    name: Build and test
-    runs-on: windows-latest
+    name: Build and test (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x64
+          - runner: windows-11-arm
+            arch: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -35,13 +44,13 @@ jobs:
         run: dotnet build RemoteCommanderTray.sln -c Release --no-restore
 
       - name: Test
-        run: dotnet test tests/RemoteCommanderTray.Core.Tests/RemoteCommanderTray.Core.Tests.csproj -c Release --no-build --logger "trx;LogFileName=test-results.trx"
+        run: dotnet test RemoteCommanderTray.sln -c Release --no-build --logger "trx;LogFileName=test-results.trx"
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-results
+          name: test-results-${{ matrix.arch }}
           path: "**/TestResults/*.trx"
           if-no-files-found: ignore
 

@@ -1,244 +1,230 @@
-using System.Diagnostics;
+using System.ComponentModel;
+using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 using RemoteCommanderTray.Core;
 
 namespace RemoteCommanderTray.Windows;
 
-/// <summary>
-/// Launches the official CLI as a hidden child process with both streams redirected.
-/// </summary>
-/// <remarks>
-/// <para>
-/// <c>CreateNoWindow</c> plus <c>UseShellExecute = false</c> is what keeps a console
-/// window from flashing at sign-in. Because there is no console, there is also no way to
-/// send Ctrl+C, so stopping means killing the process tree; the device's own heartbeat
-/// timeout is what marks it offline server-side.
-/// </para>
-/// <para>
-/// This instance owns a job object covering the whole generation it starts. Killing the
-/// tree from the root is not enough on its own: once the root has exited, its surviving
-/// descendants have no common parent left to walk, and only the job can reach them.
-/// So the job is terminated on stop <em>and</em> on dispose after a natural exit.
-/// </para>
-/// </remarks>
+/// <summary>Hidden, bounded-output process born inside its generation's Job Object.
+/// No uncontained fallback, PID-tree guessing or global process-name killing.</summary>
 [SupportedOSPlatform("windows")]
 internal sealed class WindowsAgentProcess : IAgentProcess
 {
+    private static readonly TimeSpan DrainTimeout = TimeSpan.FromSeconds(5);
     private readonly AgentLaunchSpec _spec;
-    private readonly JobObject? _job;
-    private readonly bool _requireJob;
-    private readonly Action<string> _log;
-    private readonly Process _process;
-    private int _exitRaised;
-    private bool _disposed;
+    private readonly JobObject _job = new();
+    private readonly TaskCompletionSource<int?> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly CancellationTokenSource _readCancellation = new();
+    private SafeKernelHandle? _handle;
+    private AnonymousPipeServerStream? _stdout, _stderr, _stdin;
+    private WaitHandle? _waitHandle;
+    private RegisteredWaitHandle? _registeredWait;
+    private Task? _monitor;
+    private int _disposed;
+    private volatile bool _hasExited = true;
+    private bool _started;
 
-    public WindowsAgentProcess(AgentLaunchSpec spec, JobObject? job, bool requireJob, Action<string> log)
-    {
-        _spec = spec;
-        _job = job;
-        _requireJob = requireJob;
-        _log = log;
-        _process = new Process
-        {
-            StartInfo = CreateStartInfo(spec),
-            EnableRaisingEvents = true,
-        };
-
-        _process.OutputDataReceived += (_, e) => Emit(e.Data, isError: false);
-        _process.ErrorDataReceived += (_, e) => Emit(e.Data, isError: true);
-        _process.Exited += (_, _) => RaiseExited();
-    }
-
+    public WindowsAgentProcess(AgentLaunchSpec spec) => _spec = spec;
     public event EventHandler<AgentOutputLine>? OutputReceived;
-
     public event EventHandler<int?>? Exited;
-
     public int? ProcessId { get; private set; }
-
-    public bool HasExited
-    {
-        get
-        {
-            try
-            {
-                return ProcessId is null || _process.HasExited;
-            }
-            catch (InvalidOperationException)
-            {
-                return true;
-            }
-        }
-    }
+    public bool HasExited => _hasExited;
+    internal Task<int?> Completion => _completion.Task;
+    internal uint ActiveProcessCount => _job.ActiveProcessCount;
 
     public void Start()
     {
-        if (_job is null && _requireJob)
+        ObjectDisposedException.ThrowIf(_disposed != 0, this);
+        if (_started) throw new InvalidOperationException("A process generation can only be started once.");
+        _started = true;
+        var executable = ResolveExecutable(_spec.FileName);
+        _stdout = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
+        _stderr = new AnonymousPipeServerStream(PipeDirection.In, HandleInheritability.Inheritable);
+        _stdin = new AnonymousPipeServerStream(PipeDirection.Out, HandleInheritability.Inheritable);
+        using var attributes = new ProcessAttributes(_job, _stdin.ClientSafePipeHandle,
+            _stdout.ClientSafePipeHandle, _stderr.ClientSafePipeHandle);
+        var startup = new NativeMethods.StartupInfoEx
         {
-            throw new InvalidOperationException(
-                "No job object is available, so an orphaned agent could survive the tray. "
-                + "Set \"requireJobObject\": false in settings.json to start anyway.");
-        }
+            Info = new NativeMethods.StartupInfo
+            {
+                Size = (uint)Marshal.SizeOf<NativeMethods.StartupInfoEx>(),
+                Flags = NativeMethods.StartfUseStdHandles,
+                StandardInput = _stdin.ClientSafePipeHandle.DangerousGetHandle(),
+                StandardOutput = _stdout.ClientSafePipeHandle.DangerousGetHandle(),
+                StandardError = _stderr.ClientSafePipeHandle.DangerousGetHandle(),
+            },
+            Attributes = attributes.Pointer,
+        };
+        if (!NativeMethods.CreateProcessW(executable, new StringBuilder($"\"{executable}\" {_spec.Arguments}"),
+            IntPtr.Zero, IntPtr.Zero, true, NativeMethods.CreateNoWindow | NativeMethods.ExtendedStartupInfoPresent,
+            IntPtr.Zero, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ref startup, out var info))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not create the contained agent process.");
 
-        if (!_process.Start())
-        {
-            throw new InvalidOperationException($"Could not start {_spec.Description}.");
-        }
+        _handle = new SafeKernelHandle(info.Process);
+        using var thread = new SafeKernelHandle(info.Thread);
+        ProcessId = checked((int)info.ProcessId);
+        _hasExited = false;
+        // The child inherited only its three stdio handles, NEVER the owning job handle.
+        _stdout.DisposeLocalCopyOfClientHandle();
+        _stderr.DisposeLocalCopyOfClientHandle();
+        _stdin.DisposeLocalCopyOfClientHandle();
+        var rootExit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _waitHandle = new ProcessWaitHandle(_handle);
+        _registeredWait = ThreadPool.RegisterWaitForSingleObject(_waitHandle,
+            (_, _) => rootExit.TrySetResult(), null, Timeout.Infinite, executeOnlyOnce: true);
+        _monitor = ObserveAsync(rootExit.Task, ReadOutputAsync(_stdout, false), ReadOutputAsync(_stderr, true));
+    }
 
-        ProcessId = _process.Id;
-
-        // Assign before the child gets far, so anything it spawns is inside the job too.
+    private async Task ObserveAsync(Task rootExit, Task stdout, Task stderr)
+    {
+        int? exitCode = null;
         try
         {
-            _job?.Assign(_process.Handle);
+            await rootExit.ConfigureAwait(false);
+            _hasExited = true;
+            if (_handle is not null && NativeMethods.GetExitCodeProcess(_handle, out var code)) exitCode = unchecked((int)code);
+            // Root exit is not group exit. Do not publish Completion until descendants
+            // are gone, including children holding redirected pipe handles open.
+            await _job.TerminateAndDrainAsync(DrainTimeout).ConfigureAwait(false);
+            await Task.WhenAll(stdout, stderr).WaitAsync(DrainTimeout).ConfigureAwait(false);
+            _completion.TrySetResult(exitCode);
         }
-        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        catch (Exception ex)
         {
-            _log($"Could not place the agent in a job object: {ex.Message}");
-            if (_requireJob)
-            {
-                // Fail closed: an unsupervised generation is exactly what the job exists
-                // to prevent, so tear it down rather than run without the guarantee.
-                TryKillTree();
-                throw new InvalidOperationException(
-                    "The agent could not be placed in a job object, so it was stopped. "
-                    + "Set \"requireJobObject\": false in settings.json to start anyway.",
-                    ex);
-            }
+            _readCancellation.Cancel();
+            _completion.TrySetException(ex);
         }
-
-        _process.BeginOutputReadLine();
-        _process.BeginErrorReadLine();
+        finally
+        {
+            Exited?.Invoke(this, exitCode);
+        }
     }
+
+    private async Task ReadOutputAsync(Stream stream, bool isError)
+    {
+        using var reader = new StreamReader(stream, new UTF8Encoding(false), true, 4096, leaveOpen: true);
+        var buffer = new char[4096];
+        var line = new StringBuilder();
+        var oversized = false;
+        try
+        {
+            int count;
+            while ((count = await reader.ReadAsync(buffer.AsMemory(), _readCancellation.Token).ConfigureAwait(false)) > 0)
+            {
+                for (var i = 0; i < count; i++)
+                {
+                    var c = buffer[i];
+                    if (c == '\n')
+                    {
+                        Emit(oversized ? "<oversized agent output omitted>" : line.ToString().TrimEnd('\r'), isError);
+                        line.Clear();
+                        oversized = false;
+                    }
+                    else if (line.Length < 8192) line.Append(c);
+                    else oversized = true;
+                }
+            }
+            if (line.Length > 0 || oversized) Emit(oversized ? "<oversized agent output omitted>" : line.ToString(), isError);
+        }
+        catch (OperationCanceledException) when (_readCancellation.IsCancellationRequested) { }
+        catch (ObjectDisposedException) when (_disposed != 0) { }
+    }
+
+    private void Emit(string line, bool isError) => OutputReceived?.Invoke(this, new(line, isError));
 
     public async Task StopAsync(TimeSpan gracePeriod, CancellationToken cancellationToken = default)
     {
-        if (ProcessId is null)
-        {
-            return;
-        }
-
-        try
-        {
-            if (!_process.HasExited)
-            {
-                _process.Kill(entireProcessTree: true);
-
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(gracePeriod);
-                try
-                {
-                    await _process.WaitForExitAsync(timeout.Token).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    // Terminating the job below is the answer to anything that will not die.
-                }
-            }
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception)
-        {
-            // Already gone, or gone by the time the kill landed.
-        }
-
-        // The root exiting says nothing about its descendants, so the job gets the last
-        // word either way.
-        _job?.Terminate();
-    }
-
-    private static ProcessStartInfo CreateStartInfo(AgentLaunchSpec spec)
-    {
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = spec.FileName,
-            Arguments = spec.Arguments,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            RedirectStandardInput = true,
-            StandardOutputEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-            StandardErrorEncoding = new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-            WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        };
-
-        // Keeps Node from buffering its status lines behind a pipe, so the tray icon
-        // reflects what the device is doing rather than what it did a minute ago.
-        startInfo.Environment["NODE_NO_READLINE"] = "1";
-        startInfo.Environment["FORCE_COLOR"] = "0";
-        return startInfo;
-    }
-
-    private void Emit(string? data, bool isError)
-    {
-        if (data is null)
-        {
-            return;
-        }
-
-        OutputReceived?.Invoke(this, new AgentOutputLine(data, isError));
-    }
-
-    private void RaiseExited()
-    {
-        if (Interlocked.Exchange(ref _exitRaised, 1) != 0)
-        {
-            return;
-        }
-
-        int? code;
-        try
-        {
-            code = _process.ExitCode;
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
-        {
-            code = null;
-        }
-
-        Exited?.Invoke(this, code);
-    }
-
-    private void TryKillTree()
-    {
-        try
-        {
-            _process.Kill(entireProcessTree: true);
-        }
-        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException or System.ComponentModel.Win32Exception)
-        {
-            // Nothing left to kill.
-        }
+        if (_handle is null) return;
+        _job.Terminate();
+        // Cancellation cannot bypass cleanup: terminate first, then bound the wait.
+        await Completion.WaitAsync(gracePeriod, cancellationToken).ConfigureAwait(false);
     }
 
     public void Dispose()
     {
-        if (_disposed)
-        {
-            return;
-        }
-
-        _disposed = true;
-
-        // Dispose is also the natural-exit path: the supervisor calls it once the root
-        // process has ended. Terminating here is what reaches descendants that outlived
-        // their root, which closing the Process handle alone never did.
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         try
         {
-            _job?.Terminate();
+            // Also covers a partial Start failure before the monitor was installed.
+            _job.TerminateAndDrainAsync(DrainTimeout).GetAwaiter().GetResult();
+            if (_monitor is not null) Completion.WaitAsync(DrainTimeout).GetAwaiter().GetResult();
         }
         finally
         {
-            _job?.Dispose();
+            _readCancellation.Cancel();
+            _registeredWait?.Unregister(null);
+            _waitHandle?.Dispose();
+            _stdin?.Dispose();
+            _stdout?.Dispose();
+            _stderr?.Dispose();
+            _handle?.Dispose();
+            _job.Dispose();
+            _hasExited = true;
         }
+    }
 
-        try
+    private static string ResolveExecutable(string executable)
+    {
+        if (Path.IsPathRooted(executable)) return executable;
+        foreach (var directory in new[] { Environment.SystemDirectory }
+            .Concat((Environment.GetEnvironmentVariable("PATH") ?? "").Split(';')))
         {
-            _process.Dispose();
+            if (string.IsNullOrWhiteSpace(directory)) continue;
+            var candidate = Path.Combine(directory.Trim().Trim('"'), executable);
+            if (File.Exists(candidate)) return candidate;
+            if (File.Exists(candidate + ".exe")) return candidate + ".exe";
         }
-        catch (InvalidOperationException)
+        throw new FileNotFoundException("The agent executable was not found on PATH.");
+    }
+
+    private sealed class ProcessWaitHandle : WaitHandle
+    {
+        // Owner outlives the registered wait; this borrowed handle does not own the process.
+        public ProcessWaitHandle(SafeKernelHandle owner)
+            => SafeWaitHandle = new SafeWaitHandle(owner.DangerousGetHandle(), ownsHandle: false);
+    }
+
+    private sealed class ProcessAttributes : IDisposable
+    {
+        private IntPtr _handles, _job;
+        private bool _initialized;
+        public IntPtr Pointer { get; private set; }
+        public ProcessAttributes(JobObject job, params SafePipeHandle[] handles)
         {
-            // Nothing to release.
+            try
+            {
+                nuint size = 0;
+                NativeMethods.InitializeProcThreadAttributeList(IntPtr.Zero, 2, 0, ref size);
+                if (size == 0) throw new Win32Exception(Marshal.GetLastWin32Error());
+                Pointer = Marshal.AllocHGlobal(checked((int)size));
+                if (!NativeMethods.InitializeProcThreadAttributeList(Pointer, 2, 0, ref size))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                _initialized = true;
+                _handles = Marshal.AllocHGlobal(handles.Length * IntPtr.Size);
+                for (var i = 0; i < handles.Length; i++) Marshal.WriteIntPtr(_handles, i * IntPtr.Size, handles[i].DangerousGetHandle());
+                Set(NativeMethods.HandleList, _handles, (nuint)(handles.Length * IntPtr.Size));
+                _job = Marshal.AllocHGlobal(IntPtr.Size);
+                Marshal.WriteIntPtr(_job, job.Handle.DangerousGetHandle());
+                Set(NativeMethods.JobList, _job, (nuint)IntPtr.Size);
+            }
+            catch { Dispose(); throw; }
+        }
+        private void Set(nuint key, IntPtr value, nuint size)
+        {
+            if (!NativeMethods.UpdateProcThreadAttribute(Pointer, 0, key, value, size, IntPtr.Zero, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        public void Dispose()
+        {
+            if (_initialized) NativeMethods.DeleteProcThreadAttributeList(Pointer);
+            Marshal.FreeHGlobal(Pointer);
+            Marshal.FreeHGlobal(_handles);
+            Marshal.FreeHGlobal(_job);
+            Pointer = _handles = _job = IntPtr.Zero;
+            _initialized = false;
         }
     }
 }

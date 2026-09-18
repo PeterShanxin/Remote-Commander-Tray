@@ -45,8 +45,10 @@ public sealed class AgentStateMachine
     /// <summary>A child process has just been launched.</summary>
     public void OnProcessStarted()
     {
-        _deviceReadySeen = false;
-        Update(s => Transition(
+        Update(s =>
+        {
+            _deviceReadySeen = false;
+            return Transition(
             s with
             {
                 ProcessRunning = true,
@@ -54,8 +56,13 @@ public sealed class AgentStateMachine
                 VerificationUri = null,
                 UserCode = null,
                 NextRestartUtc = null,
+                DeviceName = null,
+                DeviceId = null,
+                UserEmail = null,
+                LastError = null,
             },
-            AgentState.Starting));
+            AgentState.Starting);
+        });
     }
 
     /// <summary>The child process is gone.</summary>
@@ -63,9 +70,9 @@ public sealed class AgentStateMachine
     /// <param name="userRequested">True when the tray asked it to stop.</param>
     public void OnProcessExited(int? exitCode, bool userRequested)
     {
-        _deviceReadySeen = false;
         Update(s =>
         {
+            _deviceReadySeen = false;
             var next = s with
             {
                 ProcessRunning = false,
@@ -103,8 +110,12 @@ public sealed class AgentStateMachine
     /// </summary>
     public void OnSessionLost(string reason)
         => Update(s => Transition(
-            s with { ProcessRunning = false, VerificationUri = null, UserCode = null, LastError = reason },
-            AgentState.Error));
+            s with { ProcessRunning = false, VerificationUri = null, UserCode = null, LastError = reason, NextRestartUtc = null },
+            AgentState.AuthenticationRequired));
+
+    /// <summary>Clears a cancelled retry without leaving a stale countdown.</summary>
+    public void ClearPendingRestart()
+        => Update(s => s with { NextRestartUtc = null });
 
     /// <summary>Counts a completed restart for diagnostics.</summary>
     public void OnRestartPerformed()
@@ -123,6 +134,9 @@ public sealed class AgentStateMachine
 
     private AgentSnapshot Apply(AgentSnapshot s, AgentSignal signal)
     {
+        if (s.State == AgentState.AuthenticationRequired && s.LastError is not null &&
+            signal.Kind is AgentSignalKind.DeviceOnline or AgentSignalKind.DeviceReady or AgentSignalKind.ChannelSubscribed)
+            return s;
         switch (signal.Kind)
         {
             case AgentSignalKind.DeviceStarting:
@@ -161,8 +175,8 @@ public sealed class AgentStateMachine
 
             case AgentSignalKind.SessionExpired:
                 return Transition(
-                    s with { LastError = NullIfBlank(signal.Value) ?? "Remote session expired." },
-                    AgentState.Error);
+                    s with { LastError = "Remote session expired. Use Re-authenticate to sign in again.", VerificationUri = null, UserCode = null, NextRestartUtc = null },
+                    AgentState.AuthenticationRequired);
 
             case AgentSignalKind.DeviceReady:
                 _deviceReadySeen = true;

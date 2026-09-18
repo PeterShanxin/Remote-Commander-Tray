@@ -32,6 +32,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\RemoteCommanderTray.Core\RemoteCommanderTray.Core.csproj" />
+    <InternalsVisibleTo Include="RemoteCommanderTray.Windows.Tests" />
   </ItemGroup>
 
 </Project>

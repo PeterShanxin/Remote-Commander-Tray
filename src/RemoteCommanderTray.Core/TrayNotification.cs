@@ -18,7 +18,7 @@ public enum NotificationKind
     /// <summary>The official CLI could not be found or launched at all.</summary>
     AgentUnavailable,
 
-    /// <summary>The Remote MCP session was lost and the agent is being restarted.</summary>
+    /// <summary>Legacy notification category; session loss now raises AuthenticationRequired.</summary>
     SessionExpired,
 }
 
