@@ -9,7 +9,7 @@ dotnet test RemoteCommanderTray.sln -c Release
 dotnet test RemoteCommanderTray.sln -c Debug
 ```
 
-The core suite has 135 cases. The separate Windows.Integration harness retains 10 native scenarios, including owner-crash cleanup and environment inheritance. Windows integration adds 12 cases covering actual
+The core suite has 138 cases. The separate Windows.Integration harness retains 10 native scenarios, including owner-crash cleanup and environment inheritance. Windows integration adds 12 cases covering actual
 process/job lifetime, isolated registry adapters and STA WinForms tray controls.
 CI runs the full suite on native x64 and ARM64 Windows with .NET 8, then publishes
 both architectures. Publishing alone is not counted as native runtime verification.
@@ -27,7 +27,7 @@ that private test key. They never modify the real Run or StartupApproved entries
 
 The fix revision was exercised on Windows ARM64 with SDK 9.0.318 / runtime 9.0.20,
 using DOTNET_ROLL_FORWARD=Major for the net8 test assemblies. Release and Debug both passed all
-122 core and 12 Windows cases before reconciliation. The reconciled suite adds 13 incoming core cases and 10 native integration scenarios. Exact .NET 8 verification belongs to the CI result,
+122 core and 12 Windows cases before reconciliation. The reconciled Release suite passed all 138 core cases, 12 Windows tests, and 10 native integration scenarios. Exact .NET 8 verification belongs to the CI result,
 not this local roll-forward run. No real device, OAuth flow or production startup
 entry was launched/changed by the tests. Test children are synthetic and job-scoped.
 
