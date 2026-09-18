@@ -104,6 +104,10 @@ internal sealed class FakeAgentProcessFactory : IAgentProcessFactory
 
     public AgentCommandResult LogoutResult { get; set; } = new(0, "Logged out locally.");
 
+    /// <summary>When set, RunOnceAsync blocks until it is completed, standing in for a
+    /// logout that takes its time.</summary>
+    public TaskCompletionSource? LogoutGate { get; set; }
+
     public List<AgentLaunchSpec> OneShotCommands { get; } = [];
 
     public IReadOnlyCollection<FakeAgentProcess> Created => _created;
@@ -138,7 +142,14 @@ internal sealed class FakeAgentProcessFactory : IAgentProcessFactory
     {
         OneShotCommands.Add(spec);
         if (LogoutFailure is not null) return Task.FromException<AgentCommandResult>(LogoutFailure);
-        return Task.FromResult(LogoutResult);
+        if (LogoutGate is null) return Task.FromResult(LogoutResult);
+        return AwaitGateAsync();
+
+        async Task<AgentCommandResult> AwaitGateAsync()
+        {
+            await LogoutGate.Task.ConfigureAwait(false);
+            return LogoutResult;
+        }
     }
 }
 

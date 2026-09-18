@@ -41,19 +41,40 @@ internal static class Program
 
         ApplicationConfiguration.Initialize();
 
-        var paths = new AppPaths();
-        paths.EnsureCreated();
-
-        var settingsStore = new SettingsStore(paths.SettingsFile);
-        var settings = settingsStore.Load();
-
-        // Writing the file back on first run gives users something to edit.
-        if (!File.Exists(paths.SettingsFile))
+        AppPaths paths;
+        TraySettings settings;
+        RollingFileLog log;
+        try
         {
-            settingsStore.TrySave(settings, out _);
+            // Creating the data directory can fail on its own - a redirected, full or
+            // locked %LOCALAPPDATA%. Doing it outside the handler below turned that into
+            // an unhandled exception and a launch that simply never appeared.
+            paths = new AppPaths();
+            paths.EnsureCreated();
+
+            var settingsStore = new SettingsStore(paths.SettingsFile);
+            settings = settingsStore.Load();
+
+            // Writing the file back on first run gives users something to edit.
+            if (!File.Exists(paths.SettingsFile))
+            {
+                settingsStore.TrySave(settings, out _);
+            }
+
+            log = new RollingFileLog(paths.AgentLogFile, settings.LogMaxBytes, settings.LogRetainedFiles);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+            or System.Security.SecurityException or ArgumentException or NotSupportedException)
+        {
+            MessageBox.Show(
+                $"Remote Commander Tray could not prepare its data folder:\n\n{ex.Message}",
+                "Remote Commander Tray",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+            mutex.ReleaseMutex();
+            return 1;
         }
 
-        var log = new RollingFileLog(paths.AgentLogFile, settings.LogMaxBytes, settings.LogRetainedFiles);
         var version = ReadVersion();
         log.Write(
             LogSource.Tray,

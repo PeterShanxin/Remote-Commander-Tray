@@ -52,8 +52,13 @@ public sealed partial class AgentOutputParser
 
         // JSON/stringified tool output must not become a status prefix when decoration
         // is stripped. Keep metadata out even if a result marker was lost/interleaved.
-        var trimmed = rawLine.TrimStart();
-        if (trimmed.StartsWith('{') || trimmed.StartsWith('[') || trimmed.StartsWith('"'))
+        //
+        // The guard has to run on ANSI-stripped text, not the raw line. A payload such as
+        // "\u001b[32m{\"Device ready\":...}" does not start with a delimiter while the
+        // escape is still attached, so a raw check waves it through - and Normalize then
+        // strips the escape and the brace, leaving a line that begins "Device ready".
+        var undecorated = AnsiEscape().Replace(rawLine, string.Empty).TrimStart();
+        if (undecorated.StartsWith('{') || undecorated.StartsWith('[') || undecorated.StartsWith('"'))
             return new AgentSignal(AgentSignalKind.ToolPayload);
         var line = Normalize(rawLine);
         if (line.Length == 0)

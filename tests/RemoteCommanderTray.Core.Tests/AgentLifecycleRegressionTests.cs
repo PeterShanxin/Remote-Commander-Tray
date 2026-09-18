@@ -408,3 +408,147 @@ public class SessionLatchSurvivesExitTests : IDisposable
         GC.SuppressFinalize(this);
     }
 }
+
+/// <summary>
+/// Regressions for the automated review of `2c06764`. Each failed against that commit.
+/// </summary>
+public class CodexReviewRegressionTests : IDisposable
+{
+    private readonly string _folder = Path.Combine(
+        Path.GetTempPath(),
+        "rct-codex-" + Guid.NewGuid().ToString("N"));
+
+    private readonly FakeAgentProcessFactory _factory = new();
+    private readonly TraySettings _settings = new();
+    private readonly RollingFileLog _log;
+    private readonly AgentSupervisor _supervisor;
+
+    public CodexReviewRegressionTests()
+    {
+        Directory.CreateDirectory(_folder);
+        _log = new RollingFileLog(Path.Combine(_folder, "agent.log"), 64 * 1024, 1);
+        _supervisor = new AgentSupervisor(
+            new AgentStateMachine(),
+            _factory,
+            new AgentCommandResolver(new InstalledAgentEnvironment()),
+            () => _settings,
+            _log,
+            backoff: new RestartBackoff([TimeSpan.FromMilliseconds(20)]));
+    }
+
+    [Fact]
+    public void Ansi_wrapped_json_cannot_forge_a_status_prefix()
+    {
+        // The escape is not whitespace, so a raw TrimStart leaves it in front of the
+        // brace and the delimiter guard never fires. Normalize then strips both, leaving
+        // a line that begins "Device ready" - a forged Online.
+        var line = "\u001b[32m{\"Device ready\":\"arbitrary tool output\"}\u001b[0m";
+
+        Assert.Equal(AgentSignalKind.ToolPayload, new AgentOutputParser().Parse(line).Kind);
+    }
+
+    [Theory]
+    [InlineData("\u001b[1m[\"Device marked as online\"]")]
+    [InlineData("  \u001b[0m  {\"Device ready\":1}")]
+    [InlineData("\u001b[32m\"Session restored\"")]
+    public void Decorated_payloads_are_classified_as_payload(string line)
+        => Assert.Equal(AgentSignalKind.ToolPayload, new AgentOutputParser().Parse(line).Kind);
+
+    [Fact]
+    public async Task An_announced_shutdown_is_not_restarted()
+    {
+        await _supervisor.StartAsync();
+        var agent = _factory.Latest;
+        agent.Emit("✅ Device ready:");
+
+        // A remote operator asked the device to stop. Restarting it fights that request.
+        agent.Emit("\U0001F6D1 Remote shutdown requested. Exiting...");
+        agent.Crash(0);
+
+        await Task.Delay(250);
+
+        Assert.Equal(1, _factory.CreatedCount);
+        Assert.Equal(AgentState.Stopped, _supervisor.Snapshot.State);
+        Assert.False(_supervisor.Snapshot.AgentWanted);
+    }
+
+    [Fact]
+    public async Task A_crash_without_an_announced_shutdown_still_restarts()
+    {
+        await _supervisor.StartAsync();
+        _factory.Latest.Emit("✅ Device ready:");
+        _factory.Latest.Crash(1);
+
+        await WaitUntil(() => _factory.CreatedCount >= 2);
+
+        Assert.True(_factory.CreatedCount >= 2);
+    }
+
+    [Fact]
+    public async Task A_new_generation_clears_the_shutdown_suppression()
+    {
+        await _supervisor.StartAsync();
+        _factory.Latest.Emit("\U0001F6D1 Remote shutdown requested. Exiting...");
+        _factory.Latest.Crash(0);
+        await Task.Delay(150);
+        Assert.Equal(AgentState.Stopped, _supervisor.Snapshot.State);
+
+        // Starting again must not inherit the previous generation's suppression.
+        await _supervisor.StartAsync();
+        _factory.Latest.Crash(1);
+        await WaitUntil(() => _factory.CreatedCount >= 3);
+
+        Assert.True(_factory.CreatedCount >= 3);
+    }
+
+    [Fact]
+    public async Task Re_authentication_stops_claiming_online_while_logout_runs()
+    {
+        await _supervisor.StartAsync();
+        _factory.Latest.Emit("✅ Device ready:");
+        Assert.Equal(AgentState.Online, _supervisor.Snapshot.State);
+
+        // Logout is allowed up to 30 seconds. The snapshot must not keep saying Online
+        // while the generation it described is already gone.
+        _factory.LogoutGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var reauthenticating = _supervisor.ReauthenticateAsync();
+        await WaitUntil(() => !_supervisor.Snapshot.ProcessRunning);
+        Assert.NotEqual(AgentState.Online, _supervisor.Snapshot.State);
+
+        _factory.LogoutGate.SetResult();
+        await reauthenticating;
+    }
+
+    private static async Task WaitUntil(Func<bool> condition, int timeoutMs = 3000)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+        while (DateTime.UtcNow < deadline)
+        {
+            if (condition())
+            {
+                return;
+            }
+
+            await Task.Delay(10);
+        }
+
+        Assert.True(condition(), "Timed out waiting for the expected state.");
+    }
+
+    public void Dispose()
+    {
+        _factory.LogoutGate?.TrySetResult();
+        _supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _log.Dispose();
+        try
+        {
+            Directory.Delete(_folder, recursive: true);
+        }
+        catch (IOException)
+        {
+            // Test scratch space.
+        }
+
+        GC.SuppressFinalize(this);
+    }
+}

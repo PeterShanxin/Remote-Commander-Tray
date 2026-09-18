@@ -38,6 +38,13 @@ internal static class Shell
                 return true;
             }
 
+            // A directory is the target, not a file whose parent we want: the About
+            // dialog passes the data folder and Open logs falls back to logs\\.
+            if (Directory.Exists(path))
+            {
+                return Launch(path);
+            }
+
             var folder = Path.GetDirectoryName(path);
             return folder is not null && Directory.Exists(folder) && Launch(folder);
         }

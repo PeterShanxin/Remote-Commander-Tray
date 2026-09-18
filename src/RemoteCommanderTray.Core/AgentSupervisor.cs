@@ -29,6 +29,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
     private CancellationTokenSource? _restartCts;
     private Task? _disposeTask;
     private bool _agentWanted;
+    private bool _shutdownAnnounced;
     private volatile bool _disposed;
     private bool _cleanupFailed;
     private DateTimeOffset _runStartedUtc;
@@ -127,6 +128,11 @@ public sealed class AgentSupervisor : IAsyncDisposable
             if (_disposed) return;
             CancelPendingRestart();
             await StopCoreAsync().ConfigureAwait(false);
+
+            // Logout can take up to 30 seconds. Publish the teardown now: leaving the
+            // previous generation's snapshot in place would keep showing Online while no
+            // agent exists at all.
+            _machine.OnProcessExited(null, userRequested: true);
             WantAgent();
             var resolution = _resolver.Resolve(AgentCommand.Logout, _settings());
             if (resolution.Spec is null) { ReportUnavailable(resolution.Problem); return; }
@@ -203,6 +209,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 _parser.Reset();
                 _errorParser.Reset();
                 _sessionLossHandled = false;
+                _shutdownAnnounced = false;
                 _authNotified = authenticationAlreadyNotified;
                 _process = process;
                 _runStartedUtc = _clock();
@@ -274,6 +281,14 @@ public sealed class AgentSupervisor : IAsyncDisposable
             // The UI can surface categories, not arbitrary failure text from tool output.
             signal = AgentLogPolicy.SafeStateSignal(signal);
             _machine.Apply(signal);
+            if (signal.Kind == AgentSignalKind.ShuttingDown)
+            {
+                // The device announced a clean shutdown - a remote shutdown request, or
+                // its own signal handler. Restarting it would fight whoever asked for it.
+                _shutdownAnnounced = true;
+                _log.Write(LogSource.Tray, "Agent announced a shutdown; automatic restart suppressed.");
+            }
+
             if (signal.Kind == AgentSignalKind.SessionExpired && !_sessionLossHandled)
             {
                 _sessionLossHandled = true;
@@ -316,6 +331,16 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 _machine.OnSessionLost("Sign-in did not complete. Use Re-authenticate to retry.");
                 return;
             }
+            // An announced shutdown is an expected exit, so it ends the generation the
+            // same way a user Stop does rather than counting as a crash.
+            if (_shutdownAnnounced)
+            {
+                // The snapshot has to agree, or the menu keeps offering Stop for an agent
+                // that is already gone and will not come back on its own.
+                _agentWanted = false;
+                _machine.SetAgentWanted(false);
+            }
+
             _machine.OnProcessExited(exitCode, userRequested: !_agentWanted);
             if (!_agentWanted) return;
             if (_clock() - _runStartedUtc >= TimeSpan.FromSeconds(_settings().HealthyRunSeconds)) ResetFailures();
