@@ -46,6 +46,9 @@ jobs:
       - name: Test
         run: dotnet test RemoteCommanderTray.sln -c Release --no-build --logger "trx;LogFileName=test-results.trx"
 
+      - name: Native lifecycle integration
+        run: dotnet run --project tests/RemoteCommanderTray.Windows.Integration -c Release --no-build
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -53,6 +56,18 @@ jobs:
           name: test-results-${{ matrix.arch }}
           path: "**/TestResults/*.trx"
           if-no-files-found: ignore
+
+  test-gate:
+    name: Build and test
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require both native architectures
+        env:
+          RESULT: ${{ needs.test.result }}
+        run: test "$RESULT" = success
 
   publish:
     name: Publish ${{ matrix.rid }}

@@ -164,7 +164,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var signInVisible = snapshot.State == AgentState.AuthenticationRequired;
         _signInSeparator.Visible = signInVisible;
         _openSignInItem.Visible = signInVisible;
-        _openSignInItem.Enabled = !string.IsNullOrWhiteSpace(snapshot.VerificationUri);
+        _openSignInItem.Enabled = !_busy && (snapshot.RequiresReauthentication || !string.IsNullOrWhiteSpace(snapshot.VerificationUri));
+        _openSignInItem.Text = snapshot.RequiresReauthentication ? "Sign in again..." : "Open sign-in page";
         _copyCodeItem.Visible = signInVisible && !string.IsNullOrWhiteSpace(snapshot.UserCode);
         _copyCodeItem.Text = snapshot.UserCode is null
             ? "Copy sign-in code"
@@ -268,6 +269,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OpenSignInPage()
     {
+        if (_snapshot.RequiresReauthentication) { Reauthenticate(); return; }
         if (!Shell.OpenUrl(_snapshot.VerificationUri))
         {
             MessageBox.Show(

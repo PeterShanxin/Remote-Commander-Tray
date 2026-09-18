@@ -52,6 +52,7 @@ public sealed class AgentStateMachine
             s with
             {
                 ProcessRunning = true,
+                RequiresReauthentication = false,
                 AgentWanted = true,
                 VerificationUri = null,
                 UserCode = null,
@@ -76,6 +77,7 @@ public sealed class AgentStateMachine
             var next = s with
             {
                 ProcessRunning = false,
+                RequiresReauthentication = false,
                 VerificationUri = null,
                 UserCode = null,
             };
@@ -106,12 +108,25 @@ public sealed class AgentStateMachine
 
     /// <summary>
     /// The remote session was lost while the process stayed alive, and the tray is about
-    /// to restart it. Distinct from an exit so the menu can say what actually happened.
+    /// waiting for explicit sign-in. Distinct from an exit so the menu can say what actually happened.
     /// </summary>
     public void OnSessionLost(string reason)
         => Update(s => Transition(
-            s with { ProcessRunning = false, VerificationUri = null, UserCode = null, LastError = reason, NextRestartUtc = null },
+            s with { RequiresReauthentication = true, ProcessRunning = false, VerificationUri = null, UserCode = null, LastError = reason, NextRestartUtc = null },
             AgentState.AuthenticationRequired));
+
+    /// <summary>Cleanup failed, not a successful user stop. Keep that failure visible.</summary>
+    public void OnCleanupFailed()
+        => Update(s => Transition(s with
+        {
+            ProcessRunning = false,
+            AgentWanted = false,
+            RequiresReauthentication = false,
+            VerificationUri = null,
+            UserCode = null,
+            NextRestartUtc = null,
+            LastError = "Agent cleanup was not confirmed. Exit the tray before restarting.",
+        }, AgentState.Error));
 
     /// <summary>Clears a cancelled retry without leaving a stale countdown.</summary>
     public void ClearPendingRestart()
@@ -134,9 +149,7 @@ public sealed class AgentStateMachine
 
     private AgentSnapshot Apply(AgentSnapshot s, AgentSignal signal)
     {
-        if (s.State == AgentState.AuthenticationRequired && s.LastError is not null &&
-            signal.Kind is AgentSignalKind.DeviceOnline or AgentSignalKind.DeviceReady or AgentSignalKind.ChannelSubscribed)
-            return s;
+        if (s.RequiresReauthentication) return s; // Terminal until a new generation.
         switch (signal.Kind)
         {
             case AgentSignalKind.DeviceStarting:
@@ -175,7 +188,7 @@ public sealed class AgentStateMachine
 
             case AgentSignalKind.SessionExpired:
                 return Transition(
-                    s with { LastError = "Remote session expired. Use Re-authenticate to sign in again.", VerificationUri = null, UserCode = null, NextRestartUtc = null },
+                    s with { RequiresReauthentication = true, LastError = "Remote session expired. Use Re-authenticate to sign in again.", VerificationUri = null, UserCode = null, NextRestartUtc = null },
                     AgentState.AuthenticationRequired);
 
             case AgentSignalKind.DeviceReady:

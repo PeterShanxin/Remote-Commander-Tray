@@ -158,12 +158,11 @@ public sealed class AgentSupervisor : IAsyncDisposable
             }
 
             ResetFailures();
-            lock (_callbackGate) { _authNotified = true; }
             Raise(new TrayNotification(NotificationKind.ReauthenticationStarted,
                 "Remote Commander - sign-in needed",
                 "Finish the official Desktop Commander sign-in in your browser. "
                 + "Use Open sign-in page in the tray if no browser opens."));
-            await StartCoreAsync().ConfigureAwait(false);
+            await StartCoreAsync(authenticationAlreadyNotified: true).ConfigureAwait(false);
         }
         finally { _mutex.Release(); }
     }
@@ -172,7 +171,6 @@ public sealed class AgentSupervisor : IAsyncDisposable
     {
         _agentWanted = true;
         _machine.SetAgentWanted(true);
-        lock (_callbackGate) { _authNotified = false; }
     }
 
     private void ResetFailures()
@@ -184,7 +182,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
 
     // Caller holds _mutex. The prior generation must be drained even if its root
     // already died and its exit callback is still waiting for this same semaphore.
-    private async Task StartCoreAsync()
+    private async Task StartCoreAsync(bool authenticationAlreadyNotified = false)
     {
         if (_disposed || IsRunning) return;
         if (_cleanupFailed)
@@ -205,6 +203,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 _parser.Reset();
                 _errorParser.Reset();
                 _sessionLossHandled = false;
+                _authNotified = authenticationAlreadyNotified;
                 _process = process;
                 _runStartedUtc = _clock();
                 _stallNotified = false;
@@ -252,7 +251,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
             _agentWanted = false;
             _machine.SetAgentWanted(false);
             CancelPendingRestart();
-            _machine.OnProcessExited(null, userRequested: false);
+            _machine.OnCleanupFailed();
             Raise(new TrayNotification(NotificationKind.StartFailure,
                 "Remote Commander - cleanup failed",
                 "The prior agent could not be fully cleaned up. No replacement will be started. Exit the tray."));

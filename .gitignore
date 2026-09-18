@@ -24,3 +24,6 @@ coverage*.xml
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Local verification transcripts
+verification/

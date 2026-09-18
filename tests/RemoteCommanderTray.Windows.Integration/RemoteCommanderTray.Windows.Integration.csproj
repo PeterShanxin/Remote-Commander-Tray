@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/RemoteCommanderTray.Core/RemoteCommanderTray.Core.csproj" />
+    <!-- Compile the production adapter, never a simplified copy. -->
+    <Compile Include="../../src/RemoteCommanderTray/Windows/*.cs" Link="Windows/%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

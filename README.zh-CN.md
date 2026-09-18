@@ -12,7 +12,7 @@ Windows 侧的使用体验，以及一个 `desktop-commander remote` 进程的�
 ## 功能
 
 - 登录 Windows 后自动启动 Remote Device，不弹出 console 窗口。
-- 托盘图标一眼可见真实连接状态。
+- 托盘图标显示 CLI 最近报告的连接状态。
 - Agent crash 后自动重启，退避间隔 `5s → 15s → 30s → 60s`。
 - 网络短暂抖动时不重启 agent：官方 device 自己处理 heartbeat、stale connection
   和 channel recreation。
@@ -110,7 +110,7 @@ Exit
 
 **Re-authenticate...** 只做四件事：
 
-1. 停止当前 child process；
+1. 停止并回收当前整组进程；
 2. 调用官方 `desktop-commander remote --logout`；
 3. 重新启动 `desktop-commander remote`；
 4. 显示官方 CLI 打印出来的登录地址和验证码。

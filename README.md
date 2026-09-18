@@ -13,7 +13,7 @@ It owns exactly two things: the Windows user experience, and the lifecycle of on
 ## What it does
 
 - Starts the Remote Device when you sign in to Windows, with no console window.
-- Shows the real connection status in the notification area, at a glance.
+- Shows the latest CLI-reported connection status in the notification area, at a glance.
 - Restarts the agent automatically if it crashes, with a `5s → 15s → 30s → 60s` backoff.
 - Leaves the agent alone during ordinary network blips, because the official device
   already handles heartbeats, stale connections and channel recreation itself.
@@ -116,7 +116,7 @@ Ordinary reconnects are silent.
 
 **Re-authenticate...** does exactly four things:
 
-1. stops the child process;
+1. stops the entire owned process generation;
 2. runs the official `desktop-commander remote --logout`;
 3. starts `desktop-commander remote` again;
 4. shows the sign-in page and code that the official CLI prints.
