@@ -13,6 +13,7 @@ internal sealed class WindowsAgentProcessFactory : IAgentProcessFactory
     public async Task<AgentCommandResult> RunOnceAsync(AgentLaunchSpec spec, TimeSpan timeout,
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         using var process = new WindowsAgentProcess(spec);
         var output = new StringBuilder();
         var gate = new object();
@@ -32,10 +33,15 @@ internal sealed class WindowsAgentProcessFactory : IAgentProcessFactory
             var exitCode = await process.Completion.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
             lock (gate) return new(exitCode, output.ToString());
         }
-        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             await process.StopAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-            return new(null, "Command timed out or was cancelled; its process group was stopped.");
+            throw;
+        }
+        catch (TimeoutException)
+        {
+            await process.StopAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            return new(null, "Command timed out; its process group was stopped.");
         }
     }
 }

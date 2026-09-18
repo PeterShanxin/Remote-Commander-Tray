@@ -317,3 +317,94 @@ public class StartupApprovalTests
     public void An_empty_record_is_not_treated_as_disabled()
         => Assert.False(StartupApproval.IsDisabledByWindows([]));
 }
+
+/// <summary>
+/// The sign-in latch has to outlive the process it was raised for. The expired CLI stays
+/// alive, but not indefinitely, and an exit that cleared the latch would restart an agent
+/// with no credentials - which makes the official CLI open a browser on its own.
+/// </summary>
+public class SessionLatchSurvivesExitTests : IDisposable
+{
+    private readonly string _folder = Path.Combine(
+        Path.GetTempPath(),
+        "rct-latch-" + Guid.NewGuid().ToString("N"));
+
+    private readonly FakeAgentProcessFactory _factory = new();
+    private readonly TraySettings _settings = new();
+    private readonly RollingFileLog _log;
+    private readonly AgentSupervisor _supervisor;
+
+    public SessionLatchSurvivesExitTests()
+    {
+        Directory.CreateDirectory(_folder);
+        _log = new RollingFileLog(Path.Combine(_folder, "agent.log"), 64 * 1024, 1);
+        _supervisor = new AgentSupervisor(
+            new AgentStateMachine(),
+            _factory,
+            new AgentCommandResolver(new InstalledAgentEnvironment()),
+            () => _settings,
+            _log,
+            backoff: new RestartBackoff([TimeSpan.FromMilliseconds(20)]));
+    }
+
+    [Fact]
+    public async Task An_exit_after_session_loss_does_not_restart_into_an_unprompted_sign_in()
+    {
+        await _supervisor.StartAsync();
+        var agent = _factory.Latest;
+        agent.Emit("✅ Device ready:");
+
+        agent.Emit("⚠️  Remote session expired and could not be renewed.");
+        Assert.True(_supervisor.Snapshot.RequiresReauthentication);
+
+        // The still-alive CLI eventually dies on its own.
+        agent.Crash(1);
+        await Task.Delay(250);
+
+        Assert.Equal(1, _factory.CreatedCount);
+        Assert.True(_supervisor.Snapshot.RequiresReauthentication);
+        Assert.Equal(AgentState.AuthenticationRequired, _supervisor.Snapshot.State);
+    }
+
+    [Fact]
+    public async Task A_user_stop_clears_the_latch()
+    {
+        await _supervisor.StartAsync();
+        var agent = _factory.Latest;
+        agent.Emit("⚠️  Remote session expired and could not be renewed.");
+        Assert.True(_supervisor.Snapshot.RequiresReauthentication);
+
+        await _supervisor.StopAsync();
+
+        Assert.False(_supervisor.Snapshot.RequiresReauthentication);
+        Assert.Equal(AgentState.Stopped, _supervisor.Snapshot.State);
+    }
+
+    [Fact]
+    public async Task Starting_a_new_generation_clears_the_latch()
+    {
+        await _supervisor.StartAsync();
+        _factory.Latest.Emit("⚠️  Remote session expired and could not be renewed.");
+        Assert.True(_supervisor.Snapshot.RequiresReauthentication);
+
+        await _supervisor.RestartAsync();
+
+        Assert.False(_supervisor.Snapshot.RequiresReauthentication);
+    }
+
+    public void Dispose()
+    {
+        _supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _log.Dispose();
+        try
+        {
+            Directory.Delete(_folder, recursive: true);
+        }
+        catch (IOException)
+        {
+            // Test scratch space.
+        }
+
+        GC.SuppressFinalize(this);
+    }
+}

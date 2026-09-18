@@ -90,8 +90,7 @@ public sealed class ProcessTests
     [Fact] public async Task Cancelled_one_shot_cleans_before_returning()
     {
         using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
-        var result = await new WindowsAgentProcessFactory().RunOnceAsync(Command("child"), TimeSpan.FromSeconds(10), cancelled.Token);
-        Assert.Null(result.ExitCode);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => new WindowsAgentProcessFactory().RunOnceAsync(Command("child"), TimeSpan.FromSeconds(10), cancelled.Token));
     }
     [Fact] public async Task Concurrent_utf8_streams_are_fully_drained_without_capture_corruption()
     {

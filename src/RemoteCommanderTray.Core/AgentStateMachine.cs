@@ -77,15 +77,16 @@ public sealed class AgentStateMachine
             var next = s with
             {
                 ProcessRunning = false,
-                RequiresReauthentication = false,
                 VerificationUri = null,
                 UserCode = null,
             };
 
             if (userRequested || !s.AgentWanted)
             {
-                return Transition(next with { LastError = null }, AgentState.Stopped);
+                return Transition(next with { LastError = null, RequiresReauthentication = false }, AgentState.Stopped);
             }
+
+            if (s.RequiresReauthentication) return Transition(next, AgentState.AuthenticationRequired);
 
             var reason = exitCode is null
                 ? "The agent process ended unexpectedly."
