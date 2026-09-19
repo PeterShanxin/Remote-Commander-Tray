@@ -183,8 +183,7 @@ jobs:
           echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
           echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
 
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" 2>/dev/null || true)"
-          if [[ -n "${release_json}" ]]; then
+          if release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" 2>/dev/null)"; then
             if [[ "$(jq -r '.draft' <<<"${release_json}")" == "true" ]]; then
               action=resume
               echo "Draft release ${tag} exists; resuming it."
@@ -193,6 +192,7 @@ jobs:
               echo "Published release ${tag} already exists; nothing to do."
             fi
           else
+            release_json=""
             action=create
             echo "Release ${tag} does not exist; preparing it from ${GITHUB_SHA}."
           fi
@@ -200,8 +200,7 @@ jobs:
           # A published release is immutable for this workflow. On create/resume,
           # however, never attach binaries from today's main to an older existing tag.
           if [[ "${action}" != "skip" ]]; then
-            tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" 2>/dev/null || true)"
-            if [[ -n "${tag_ref}" ]]; then
+            if tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" 2>/dev/null)"; then
               object_type="$(jq -r '.object.type' <<<"${tag_ref}")"
               object_sha="$(jq -r '.object.sha' <<<"${tag_ref}")"
               while [[ "${object_type}" == "tag" ]]; do
