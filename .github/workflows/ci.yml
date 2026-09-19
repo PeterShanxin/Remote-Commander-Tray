@@ -195,30 +195,23 @@ jobs:
               "${url}"
           }
 
-          release_file="$(mktemp)"
-          release_status="$(api_get "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" "${release_file}")"
-          case "${release_status}" in
-            200)
-              release_json="$(cat "${release_file}")"
-              if [[ "$(jq -r '.draft' <<<"${release_json}")" == "true" ]]; then
-                action=resume
-                echo "Draft release ${tag} exists; resuming it."
-              else
-                action=skip
-                echo "Published release ${tag} already exists; nothing to do."
-              fi
-              ;;
-            404)
-              release_json=""
-              action=create
-              echo "Release ${tag} does not exist; preparing it from ${GITHUB_SHA}."
-              ;;
-            *)
-              echo "Release lookup for ${tag} failed with HTTP ${release_status}; refusing to publish." >&2
-              exit 1
-              ;;
-          esac
-          rm -f "${release_file}"
+          release_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"${tag}\")")"
+
+          if [[ -n "${release_json}" ]]; then
+            release_id="$(jq -r '.id' <<<"${release_json}")"
+            if [[ "$(jq -r '.draft' <<<"${release_json}")" == "true" ]]; then
+              action=resume
+              echo "Draft release ${tag} (id ${release_id}) exists; resuming it."
+            else
+              action=skip
+              echo "Published release ${tag} (id ${release_id}) already exists; nothing to do."
+            fi
+          else
+            release_id=""
+            action=create
+            echo "Release ${tag} does not exist; preparing it from ${GITHUB_SHA}."
+          fi
 
           # A published release is immutable for this workflow. On create/resume,
           # however, never attach binaries from today's main to an older existing tag.
@@ -252,6 +245,7 @@ jobs:
           fi
 
           echo "action=${action}" >> "${GITHUB_OUTPUT}"
+          echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
 
       - uses: actions/download-artifact@v4
         if: steps.release.outputs.action != 'skip'
@@ -298,27 +292,34 @@ jobs:
           fi
 
       - name: Create or refresh draft release
+        id: draft
         if: steps.release.outputs.action != 'skip'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
           ACTION: ${{ steps.release.outputs.action }}
+          EXISTING_RELEASE_ID: ${{ steps.release.outputs.release_id }}
           PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
           set -euo pipefail
           title="Remote Commander Tray ${TAG}"
 
           if [[ "${ACTION}" == "create" ]]; then
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+            release_json="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
               -f tag_name="${TAG}" \
               -f target_commitish="${GITHUB_SHA}" \
               -f name="${title}" \
               -F body=@release-notes.md \
               -F draft=true \
-              -F prerelease="${PRERELEASE}" >/dev/null
+              -F prerelease="${PRERELEASE}")"
+            release_id="$(jq -r '.id' <<<"${release_json}")"
           else
-            release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.id')"
+            release_id="${EXISTING_RELEASE_ID}"
+            if [[ ! "${release_id}" =~ ^[0-9]+$ ]]; then
+              echo "Draft release id is missing or invalid: ${release_id}" >&2
+              exit 1
+            fi
             gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
               -f name="${title}" \
               -f target_commitish="${GITHUB_SHA}" \
@@ -326,6 +327,12 @@ jobs:
               -F draft=true \
               -F prerelease="${PRERELEASE}" >/dev/null
           fi
+
+          if [[ ! "${release_id}" =~ ^[0-9]+$ ]]; then
+            echo "Created release id is missing or invalid: ${release_id}" >&2
+            exit 1
+          fi
+          echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
 
           gh release upload "${TAG}" \
             release/RemoteCommanderTray-win-x64.exe \
@@ -339,16 +346,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
           PRERELEASE: ${{ steps.release.outputs.prerelease }}
         run: |
           set -euo pipefail
+          if [[ ! "${RELEASE_ID}" =~ ^[0-9]+$ ]]; then
+            echo "Release id is missing or invalid: ${RELEASE_ID}" >&2
+            exit 1
+          fi
+
           expected=(
             "RemoteCommanderTray-win-x64.exe"
             "RemoteCommanderTray-win-arm64.exe"
           )
 
           for attempt in {1..10}; do
-            assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.assets[].name' 2>/dev/null || true)"
+            draft_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+            assets="$(jq -r '.assets[].name' <<<"${draft_json}")"
             ready=true
             for name in "${expected[@]}"; do
               grep -Fxq "${name}" <<<"${assets}" || ready=false
@@ -359,30 +373,42 @@ jobs:
             sleep 2
           done
 
+          draft_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
+          if [[ "$(jq -r '.draft' <<<"${draft_json}")" != "true" ]]; then
+            echo "Release ${TAG} is no longer a draft before verification." >&2
+            exit 1
+          fi
+          if [[ "$(jq -r '.tag_name' <<<"${draft_json}")" != "${TAG}" ]]; then
+            echo "Release id ${RELEASE_ID} has an unexpected tag." >&2
+            exit 1
+          fi
+
           for name in "${expected[@]}"; do
-            size="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
-              --jq ".assets[] | select(.name == \"${name}\") | .size")"
-            if [[ -z "${size}" || "${size}" -lt 1000000 ]]; then
+            size="$(jq -r --arg name "${name}" '.assets[] | select(.name == $name) | .size' <<<"${draft_json}")"
+            if [[ -z "${size}" || "${size}" == "null" || "${size}" -lt 1000000 ]]; then
               echo "Release asset ${name} is missing or unexpectedly small (${size:-missing})." >&2
               exit 1
             fi
             echo "Verified ${name}: ${size} bytes"
           done
 
-          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.id')"
           make_latest=true
           if [[ "${PRERELEASE}" == "true" ]]; then
             make_latest=false
           fi
 
-          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
             -F draft=false \
             -F prerelease="${PRERELEASE}" \
             -f make_latest="${make_latest}" >/dev/null
 
-          final="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"
+          final="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}")"
           if [[ "$(jq -r '.draft' <<<"${final}")" != "false" ]]; then
             echo "Release ${TAG} is still a draft after publish." >&2
+            exit 1
+          fi
+          if [[ "$(jq -r '.tag_name' <<<"${final}")" != "${TAG}" ]]; then
+            echo "Published release id ${RELEASE_ID} has an unexpected tag." >&2
             exit 1
           fi
           if [[ "$(jq -r '.prerelease' <<<"${final}")" != "${PRERELEASE}" ]]; then
@@ -390,4 +416,23 @@ jobs:
             exit 1
           fi
 
-          echo "Published ${TAG} (prerelease=${PRERELEASE}, latest=${make_latest})."
+          public_release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.id')"
+          if [[ "${public_release_id}" != "${RELEASE_ID}" ]]; then
+            echo "Published tag lookup resolved to release ${public_release_id}, expected ${RELEASE_ID}." >&2
+            exit 1
+          fi
+
+          tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")"
+          object_type="$(jq -r '.object.type' <<<"${tag_ref}")"
+          object_sha="$(jq -r '.object.sha' <<<"${tag_ref}")"
+          while [[ "${object_type}" == "tag" ]]; do
+            tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}")"
+            object_type="$(jq -r '.object.type' <<<"${tag_object}")"
+            object_sha="$(jq -r '.object.sha' <<<"${tag_object}")"
+          done
+          if [[ "${object_type}" != "commit" || "${object_sha}" != "${GITHUB_SHA}" ]]; then
+            echo "Published tag ${TAG} resolves to ${object_type} ${object_sha}, expected commit ${GITHUB_SHA}." >&2
+            exit 1
+          fi
+
+          echo "Published ${TAG} (release_id=${RELEASE_ID}, prerelease=${PRERELEASE}, latest=${make_latest})."
