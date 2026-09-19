@@ -43,6 +43,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private AgentSnapshot _snapshot = AgentSnapshot.Initial;
     private bool _busy;
     private bool _exiting;
+    private Task? _supervisorDisposeTask;
+    private bool _supervisorDisposeFailureReported;
 
     public TrayApplicationContext(
         AppPaths paths,
@@ -389,10 +391,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         try
         {
-            await _supervisor.DisposeAsync().ConfigureAwait(true);
+            await GetSupervisorDisposeTask().ConfigureAwait(true);
         }
         catch (Exception ex)
         {
+            _supervisorDisposeFailureReported = true;
             _log.Write(LogSource.Tray, $"Error during shutdown: {ex.Message}");
         }
 
@@ -518,12 +521,30 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private Task GetSupervisorDisposeTask()
+        => _supervisorDisposeTask ??= _supervisor.DisposeAsync().AsTask();
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
             _menuTimer.Dispose();
-            _supervisor.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            try
+            {
+                GetSupervisorDisposeTask().GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                // ExitApplication already reports this failure from ShutdownAsync. A
+                // cached faulted disposal task must never escape ApplicationContext.Dispose
+                // and get mislabeled by Program.Main as a startup failure.
+                if (!_supervisorDisposeFailureReported)
+                {
+                    _supervisorDisposeFailureReported = true;
+                    _log.Write(LogSource.Tray, $"Error during shutdown disposal: {ex.Message}");
+                }
+            }
+
             _notifyIcon.Visible = false;
             _notifyIcon.Dispose();
             _verboseLog?.Dispose();

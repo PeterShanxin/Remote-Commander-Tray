@@ -14,6 +14,21 @@ public class AgentStateMachineTests
         => Assert.Equal(AgentState.Stopped, NewMachine().Snapshot.State);
 
     [Fact]
+    public void A_new_generation_refreshes_starting_state_time_even_if_already_starting()
+    {
+        var machine = NewMachine();
+        machine.OnProcessStarted();
+        var firstGenerationStarted = machine.Snapshot.StateSinceUtc;
+
+        _now = _now.AddMinutes(5);
+        machine.OnProcessStarted();
+
+        Assert.Equal(AgentState.Starting, machine.Snapshot.State);
+        Assert.Equal(_now, machine.Snapshot.StateSinceUtc);
+        Assert.NotEqual(firstGenerationStarted, machine.Snapshot.StateSinceUtc);
+    }
+
+    [Fact]
     public void Walks_a_successful_startup_to_online()
     {
         var machine = NewMachine();

@@ -45,8 +45,47 @@ public sealed class TrayTests
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         await done.Task.WaitAsync(TimeSpan.FromSeconds(40));
     }
+    [Fact] public async Task Dispose_does_not_rethrow_a_shutdown_failure_already_handled()
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            var root = Path.Combine(Path.GetTempPath(), "rct-tray-dispose-" + Guid.NewGuid());
+            TrayApplicationContext? tray = null;
+            try
+            {
+                var paths = new AppPaths(root); paths.EnsureCreated();
+                var settings = new TraySettings { StartAgentOnLaunch = false, NotificationsEnabled = false };
+                var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
+                tray = new TrayApplicationContext(paths, settings, log, "test");
+
+                // Dispose the real supervisor first, then model the same cached fault
+                // ShutdownAsync has already caught before ExitThread triggers Dispose.
+                Field<AgentSupervisor>(tray, "_supervisor").DisposeAsync().AsTask().GetAwaiter().GetResult();
+                SetField(tray, "_supervisorDisposeTask", Task.FromException(new IOException("synthetic cleanup failure")));
+                SetField(tray, "_supervisorDisposeFailureReported", true);
+
+                var error = Record.Exception(tray.Dispose);
+                tray = null;
+                Assert.Null(error);
+                done.TrySetResult();
+            }
+            catch (Exception ex) { done.TrySetException(ex); }
+            finally
+            {
+                tray?.Dispose();
+                if (Directory.Exists(root)) Directory.Delete(root, true);
+            }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(20));
+    }
+
     private static T Field<T>(object target, string name)
         => (T)target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(target)!;
+
+    private static void SetField(object target, string name, object value)
+        => target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(target, value);
     private static void Pump(Func<bool> ready)
     {
         var elapsed = Stopwatch.StartNew();

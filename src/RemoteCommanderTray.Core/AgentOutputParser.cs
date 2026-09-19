@@ -57,7 +57,7 @@ public sealed partial class AgentOutputParser
         // "\u001b[32m{\"Device ready\":...}" does not start with a delimiter while the
         // escape is still attached, so a raw check waves it through - and Normalize then
         // strips the escape and the brace, leaving a line that begins "Device ready".
-        var undecorated = AnsiEscape().Replace(rawLine, string.Empty).TrimStart();
+        var undecorated = StripLeadingDecoration(rawLine, stopAtJsonDelimiter: true);
         if (undecorated.StartsWith('{') || undecorated.StartsWith('[') || undecorated.StartsWith('"'))
             return new AgentSignal(AgentSignalKind.ToolPayload);
         var line = Normalize(rawLine);
@@ -255,18 +255,31 @@ public sealed partial class AgentOutputParser
     /// </summary>
     internal static string Normalize(string rawLine)
     {
+        var line = StripLeadingDecoration(rawLine, stopAtJsonDelimiter: false);
+        return line.Length == 0 ? string.Empty : CollapseSpaces(line);
+    }
+
+    private static string StripLeadingDecoration(string rawLine, bool stopAtJsonDelimiter)
+    {
         var line = AnsiEscape().Replace(rawLine, string.Empty);
         line = line.Replace('\t', ' ').Trim();
         line = ListMarker().Replace(line, string.Empty);
 
         var start = 0;
-        while (start < line.Length && !char.IsLetterOrDigit(line[start]))
+        while (start < line.Length)
         {
+            var current = line[start];
+            if (char.IsLetterOrDigit(current)
+                || (stopAtJsonDelimiter && current is '{' or '[' or '"'))
+            {
+                break;
+            }
+
             start++;
         }
 
         // A line that is nothing but decoration carries no signal.
-        return start >= line.Length ? string.Empty : CollapseSpaces(line[start..]);
+        return start >= line.Length ? string.Empty : line[start..];
     }
 
     private static string CollapseSpaces(string value)

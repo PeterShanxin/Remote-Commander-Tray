@@ -48,9 +48,12 @@ public sealed class AgentStateMachine
         Update(s =>
         {
             _deviceReadySeen = false;
-            return Transition(
-            s with
+            // A new process generation is a new Starting interval even when the prior
+            // generation was also Starting. Health checks must not inherit its age.
+            return s with
             {
+                State = AgentState.Starting,
+                StateSinceUtc = _clock(),
                 ProcessRunning = true,
                 RequiresReauthentication = false,
                 AgentWanted = true,
@@ -61,8 +64,7 @@ public sealed class AgentStateMachine
                 DeviceId = null,
                 UserEmail = null,
                 LastError = null,
-            },
-            AgentState.Starting);
+            };
         });
     }
 
