@@ -117,25 +117,122 @@ jobs:
           git diff --exit-code -- src/RemoteCommanderTray/app.ico
 
   release:
-    name: Attach binaries to the release
+    name: Publish versioned release
     runs-on: ubuntu-latest
     needs: publish
-    if: startsWith(github.ref, 'refs/tags/v')
+    # A version bump merged to main creates the release automatically. Tag pushes are
+    # still supported for recovery/manual releases. Pull requests never publish.
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME}"
+          else
+            version="$(python - <<'PY'
+          import xml.etree.ElementTree as ET
+          version = ET.parse("src/RemoteCommanderTray/RemoteCommanderTray.csproj").getroot().findtext(".//Version")
+          if not version:
+              raise SystemExit("RemoteCommanderTray.csproj has no <Version>")
+          print(version.strip())
+          PY
+            )"
+            tag="v${version}"
+          fi
+
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: ${tag}" >&2
+            exit 1
+          fi
+
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" >/dev/null 2>&1; then
+            echo "publish=false" >> "${GITHUB_OUTPUT}"
+            echo "Release ${tag} already exists; nothing to publish."
+          else
+            echo "publish=true" >> "${GITHUB_OUTPUT}"
+            echo "Release ${tag} does not exist; preparing it from ${GITHUB_SHA}."
+          fi
+
       - uses: actions/download-artifact@v4
+        if: steps.release.outputs.publish == 'true'
         with:
+          pattern: RemoteCommanderTray-*
           path: artifacts
 
       - name: Rename per architecture
+        if: steps.release.outputs.publish == 'true'
         run: |
           mkdir -p release
           cp artifacts/RemoteCommanderTray-win-x64/RemoteCommanderTray.exe release/RemoteCommanderTray-win-x64.exe
           cp artifacts/RemoteCommanderTray-win-arm64/RemoteCommanderTray.exe release/RemoteCommanderTray-win-arm64.exe
 
-      - uses: softprops/action-gh-release@v2
+      - name: Create draft release
+        if: steps.release.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Remote Commander Tray ${{ steps.release.outputs.tag }}
           files: release/*.exe
           draft: true
           generate_release_notes: true
+          body: |
+            First public release of **Remote Commander Tray** — a lightweight Windows
+            system-tray supervisor for the official Desktop Commander Remote Device.
+
+            ### Install
+            - **Windows ARM64:** `RemoteCommanderTray-win-arm64.exe`
+            - **Windows x64:** `RemoteCommanderTray-win-x64.exe`
+            - Install the official agent once with:
+              `npm install -g @wonderwhy-er/desktop-commander`
+            - Put the executable somewhere stable, run it, then enable **Launch at sign-in**.
+
+            > If you already run `desktop-commander remote` from a terminal or Scheduled
+            > Task, stop/disable that launcher before letting the tray supervise the agent.
+            > Do not run two supervisors at the same time.
+
+      - name: Verify assets and publish
+        if: steps.release.outputs.publish == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          expected=(
+            "RemoteCommanderTray-win-x64.exe"
+            "RemoteCommanderTray-win-arm64.exe"
+          )
+
+          for attempt in {1..10}; do
+            assets="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.assets[].name' 2>/dev/null || true)"
+            ready=true
+            for name in "${expected[@]}"; do
+              grep -Fxq "${name}" <<<"${assets}" || ready=false
+            done
+            if [[ "${ready}" == true ]]; then
+              break
+            fi
+            sleep 2
+          done
+
+          for name in "${expected[@]}"; do
+            size="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"               --jq ".assets[] | select(.name == \"${name}\") | .size")"
+            if [[ -z "${size}" || "${size}" -lt 1000000 ]]; then
+              echo "Release asset ${name} is missing or unexpectedly small (${size:-missing})." >&2
+              exit 1
+            fi
+            echo "Verified ${name}: ${size} bytes"
+          done
+
+          gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
+          echo "Published ${TAG}."
