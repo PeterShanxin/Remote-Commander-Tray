@@ -127,87 +127,186 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Resolve release tag
+      - name: Resolve release
         id: release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+
+          version="$(python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          props = ET.parse("Directory.Build.props").getroot()
+          version = (props.findtext(".//Version") or "").strip()
+          if not version:
+              raise SystemExit("Directory.Build.props has no <Version>")
+
+          # Keep one version source. The SDK derives assembly/file/informational
+          # versions from Version; explicit duplicates can silently drift.
+          for name in ("AssemblyVersion", "FileVersion", "InformationalVersion"):
+              if props.findtext(f".//{name}"):
+                  raise SystemExit(f"Directory.Build.props must not define <{name}> separately")
+
+          project = ET.parse("src/RemoteCommanderTray/RemoteCommanderTray.csproj").getroot()
+          if project.findtext(".//Version"):
+              raise SystemExit("RemoteCommanderTray.csproj must not override <Version>")
+
+          print(version)
+          PY
+          )"
+
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             tag="${GITHUB_REF_NAME}"
+            if [[ "${tag}" != "v${version}" ]]; then
+              echo "Tag ${tag} does not match application version v${version}." >&2
+              exit 1
+            fi
           else
-            version="$(python - <<'PY'
-          import xml.etree.ElementTree as ET
-          version = ET.parse("src/RemoteCommanderTray/RemoteCommanderTray.csproj").getroot().findtext(".//Version")
-          if not version:
-              raise SystemExit("RemoteCommanderTray.csproj has no <Version>")
-          print(version.strip())
-          PY
-            )"
             tag="v${version}"
           fi
 
-          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+          if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "Invalid release tag: ${tag}" >&2
             exit 1
           fi
 
-          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          prerelease=false
+          if [[ "${tag}" == *-* ]]; then
+            prerelease=true
+          fi
 
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" >/dev/null 2>&1; then
-            echo "publish=false" >> "${GITHUB_OUTPUT}"
-            echo "Release ${tag} already exists; nothing to publish."
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "prerelease=${prerelease}" >> "${GITHUB_OUTPUT}"
+
+          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" 2>/dev/null || true)"
+          if [[ -n "${release_json}" ]]; then
+            if [[ "$(jq -r '.draft' <<<"${release_json}")" == "true" ]]; then
+              action=resume
+              echo "Draft release ${tag} exists; resuming it."
+            else
+              action=skip
+              echo "Published release ${tag} already exists; nothing to do."
+            fi
           else
-            echo "publish=true" >> "${GITHUB_OUTPUT}"
+            action=create
             echo "Release ${tag} does not exist; preparing it from ${GITHUB_SHA}."
           fi
 
+          # A published release is immutable for this workflow. On create/resume,
+          # however, never attach binaries from today's main to an older existing tag.
+          if [[ "${action}" != "skip" ]]; then
+            tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" 2>/dev/null || true)"
+            if [[ -n "${tag_ref}" ]]; then
+              object_type="$(jq -r '.object.type' <<<"${tag_ref}")"
+              object_sha="$(jq -r '.object.sha' <<<"${tag_ref}")"
+              while [[ "${object_type}" == "tag" ]]; do
+                tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}")"
+                object_type="$(jq -r '.object.type' <<<"${tag_object}")"
+                object_sha="$(jq -r '.object.sha' <<<"${tag_object}")"
+              done
+
+              if [[ "${object_type}" != "commit" || "${object_sha}" != "${GITHUB_SHA}" ]]; then
+                echo "Existing tag ${tag} resolves to ${object_type} ${object_sha}, not current commit ${GITHUB_SHA}." >&2
+                exit 1
+              fi
+            fi
+          fi
+
+          echo "action=${action}" >> "${GITHUB_OUTPUT}"
+
       - uses: actions/download-artifact@v4
-        if: steps.release.outputs.publish == 'true'
+        if: steps.release.outputs.action != 'skip'
         with:
           pattern: RemoteCommanderTray-*
           path: artifacts
 
-      - name: Rename per architecture
-        if: steps.release.outputs.publish == 'true'
-        run: |
-          mkdir -p release
-          cp artifacts/RemoteCommanderTray-win-x64/RemoteCommanderTray.exe release/RemoteCommanderTray-win-x64.exe
-          cp artifacts/RemoteCommanderTray-win-arm64/RemoteCommanderTray.exe release/RemoteCommanderTray-win-arm64.exe
-
-      - name: Create draft release
-        if: steps.release.outputs.publish == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.release.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: Remote Commander Tray ${{ steps.release.outputs.tag }}
-          files: release/*.exe
-          draft: true
-          generate_release_notes: true
-          body: |
-            First public release of **Remote Commander Tray** — a lightweight Windows
-            system-tray supervisor for the official Desktop Commander Remote Device.
-
-            ### Install
-            - **Windows ARM64:** `RemoteCommanderTray-win-arm64.exe`
-            - **Windows x64:** `RemoteCommanderTray-win-x64.exe`
-            - Install the official agent once with:
-              `npm install -g @wonderwhy-er/desktop-commander`
-            - Put the executable somewhere stable, run it, then enable **Launch at sign-in**.
-
-            > If you already run `desktop-commander remote` from a terminal or Scheduled
-            > Task, stop/disable that launcher before letting the tray supervise the agent.
-            > Do not run two supervisors at the same time.
-
-      - name: Verify assets and publish
-        if: steps.release.outputs.publish == 'true'
+      - name: Prepare release files and notes
+        if: steps.release.outputs.action != 'skip'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
         run: |
+          set -euo pipefail
+          mkdir -p release
+          cp artifacts/RemoteCommanderTray-win-x64/RemoteCommanderTray.exe release/RemoteCommanderTray-win-x64.exe
+          cp artifacts/RemoteCommanderTray-win-arm64/RemoteCommanderTray.exe release/RemoteCommanderTray-win-arm64.exe
+
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${TAG}" \
+            -f target_commitish="${GITHUB_SHA}" \
+            --jq '.body' > generated-notes.md
+
+          cat > release-notes.md <<EOF
+          **Remote Commander Tray ${TAG}** — a lightweight Windows system-tray
+          supervisor for the official Desktop Commander Remote Device.
+
+          ### Install
+          - **Windows ARM64:** `RemoteCommanderTray-win-arm64.exe`
+          - **Windows x64:** `RemoteCommanderTray-win-x64.exe`
+          - Install the official agent once with:
+            `npm install -g @wonderwhy-er/desktop-commander`
+          - Put the executable somewhere stable, run it, then enable **Launch at sign-in**.
+
+          > If you already run `desktop-commander remote` from a terminal or Scheduled
+          > Task, stop/disable that launcher before letting the tray supervise the agent.
+          > Do not run two supervisors at the same time.
+          EOF
+
+          if [[ -s generated-notes.md ]]; then
+            printf '\n\n---\n\n' >> release-notes.md
+            cat generated-notes.md >> release-notes.md
+          fi
+
+      - name: Create or refresh draft release
+        if: steps.release.outputs.action != 'skip'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ACTION: ${{ steps.release.outputs.action }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          title="Remote Commander Tray ${TAG}"
+
+          if [[ "${ACTION}" == "create" ]]; then
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/releases" \
+              -f tag_name="${TAG}" \
+              -f target_commitish="${GITHUB_SHA}" \
+              -f name="${title}" \
+              -F body=@release-notes.md \
+              -F draft=true \
+              -F prerelease="${PRERELEASE}" >/dev/null
+          else
+            release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.id')"
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -f name="${title}" \
+              -F body=@release-notes.md \
+              -F draft=true \
+              -F prerelease="${PRERELEASE}" >/dev/null
+          fi
+
+          gh release upload "${TAG}" \
+            release/RemoteCommanderTray-win-x64.exe \
+            release/RemoteCommanderTray-win-arm64.exe \
+            --repo "${GITHUB_REPOSITORY}" \
+            --clobber
+
+      - name: Verify assets and publish
+        if: steps.release.outputs.action != 'skip'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        run: |
+          set -euo pipefail
           expected=(
             "RemoteCommanderTray-win-x64.exe"
             "RemoteCommanderTray-win-arm64.exe"
@@ -226,7 +325,8 @@ jobs:
           done
 
           for name in "${expected[@]}"; do
-            size="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}"               --jq ".assets[] | select(.name == \"${name}\") | .size")"
+            size="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+              --jq ".assets[] | select(.name == \"${name}\") | .size")"
             if [[ -z "${size}" || "${size}" -lt 1000000 ]]; then
               echo "Release asset ${name} is missing or unexpectedly small (${size:-missing})." >&2
               exit 1
@@ -234,5 +334,25 @@ jobs:
             echo "Verified ${name}: ${size} bytes"
           done
 
-          gh release edit "${TAG}" --repo "${GITHUB_REPOSITORY}" --draft=false --latest
-          echo "Published ${TAG}."
+          release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" --jq '.id')"
+          make_latest=true
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            make_latest=false
+          fi
+
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+            -F draft=false \
+            -F prerelease="${PRERELEASE}" \
+            -f make_latest="${make_latest}" >/dev/null
+
+          final="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}")"
+          if [[ "$(jq -r '.draft' <<<"${final}")" != "false" ]]; then
+            echo "Release ${TAG} is still a draft after publish." >&2
+            exit 1
+          fi
+          if [[ "$(jq -r '.prerelease' <<<"${final}")" != "${PRERELEASE}" ]]; then
+            echo "Release ${TAG} prerelease status does not match ${PRERELEASE}." >&2
+            exit 1
+          fi
+
+          echo "Published ${TAG} (prerelease=${PRERELEASE}, latest=${make_latest})."
