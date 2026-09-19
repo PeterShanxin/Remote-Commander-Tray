@@ -29,7 +29,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
     private CancellationTokenSource? _restartCts;
     private Task? _disposeTask;
     private bool _agentWanted;
-    private bool _shutdownAnnounced;
+    private bool _remoteShutdownRequested;
     private volatile bool _disposed;
     private bool _cleanupFailed;
     private DateTimeOffset _runStartedUtc;
@@ -209,7 +209,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 _parser.Reset();
                 _errorParser.Reset();
                 _sessionLossHandled = false;
-                _shutdownAnnounced = false;
+                _remoteShutdownRequested = false;
                 _authNotified = authenticationAlreadyNotified;
                 _process = process;
                 _runStartedUtc = _clock();
@@ -281,12 +281,13 @@ public sealed class AgentSupervisor : IAsyncDisposable
             // The UI can surface categories, not arbitrary failure text from tool output.
             signal = AgentLogPolicy.SafeStateSignal(signal);
             _machine.Apply(signal);
-            if (signal.Kind == AgentSignalKind.ShuttingDown)
+            if (signal.Kind == AgentSignalKind.RemoteShutdownRequested)
             {
-                // The device announced a clean shutdown - a remote shutdown request, or
-                // its own signal handler. Restarting it would fight whoever asked for it.
-                _shutdownAnnounced = true;
-                _log.Write(LogSource.Tray, "Agent announced a shutdown; automatic restart suppressed.");
+                // This is the only shutdown line that proves a remote operator explicitly
+                // requested the device to stay down. Generic shutdown cleanup is also used
+                // after startup failures, so it must not suppress crash recovery.
+                _remoteShutdownRequested = true;
+                _log.Write(LogSource.Tray, "Explicit remote shutdown requested; automatic restart suppressed.");
             }
 
             if (signal.Kind == AgentSignalKind.SessionExpired && !_sessionLossHandled)
@@ -331,9 +332,9 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 _machine.OnSessionLost("Sign-in did not complete. Use Re-authenticate to retry.");
                 return;
             }
-            // An announced shutdown is an expected exit, so it ends the generation the
-            // same way a user Stop does rather than counting as a crash.
-            if (_shutdownAnnounced)
+            // An explicit remote shutdown is an expected exit, so it ends the generation
+            // the same way a user Stop does rather than counting as a crash.
+            if (_remoteShutdownRequested)
             {
                 // The snapshot has to agree, or the menu keeps offering Stop for an agent
                 // that is already gone and will not come back on its own.

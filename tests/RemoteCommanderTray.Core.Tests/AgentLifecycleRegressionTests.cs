@@ -473,6 +473,25 @@ public class CodexReviewRegressionTests : IDisposable
     }
 
     [Fact]
+    public async Task Generic_shutdown_cleanup_after_startup_failure_still_restarts()
+    {
+        await _supervisor.StartAsync();
+        var agent = _factory.Latest;
+
+        // The official CLI calls shutdown() from its startup-failure catch, and that
+        // generic cleanup prints this line before process.exit(1). It is not a remote
+        // request to keep the device stopped.
+        agent.Emit("❌ Device startup failed: fetch failed");
+        agent.Emit("🛑 Shutting down device...");
+        agent.Crash(1);
+
+        await WaitUntil(() => _factory.CreatedCount >= 2);
+
+        Assert.True(_supervisor.Snapshot.AgentWanted);
+        Assert.True(_factory.CreatedCount >= 2);
+    }
+
+    [Fact]
     public async Task A_crash_without_an_announced_shutdown_still_restarts()
     {
         await _supervisor.StartAsync();

@@ -66,8 +66,11 @@ public enum AgentSignalKind
     /// <summary>"Device startup failed: ...".</summary>
     StartupFailed,
 
-    /// <summary>The CLI is shutting itself down (signal, or a remote shutdown request).</summary>
+    /// <summary>The CLI entered its generic shutdown cleanup path.</summary>
     ShuttingDown,
+
+    /// <summary>An explicit remote `shutdown` tool request asked the device to exit.</summary>
+    RemoteShutdownRequested,
 
     /// <summary>
     /// A tool-call line. The payload is deliberately not carried: only the tool name is,

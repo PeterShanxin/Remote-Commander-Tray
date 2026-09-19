@@ -29,7 +29,8 @@ public static class AgentLogPolicy
         AgentSignalKind.ChannelSubscribed => "Channel subscribed.",
         AgentSignalKind.ChannelDisrupted => "Remote channel disrupted; awaiting CLI recovery.",
         AgentSignalKind.StartupFailed => "Device startup failed; check installation, network and sign-in.",
-        AgentSignalKind.ShuttingDown => "Device shutting down.",
+        AgentSignalKind.ShuttingDown => "Device entered shutdown cleanup.",
+        AgentSignalKind.RemoteShutdownRequested => "Remote shutdown requested.",
         _ => "<unknown agent event omitted>",
     };
 

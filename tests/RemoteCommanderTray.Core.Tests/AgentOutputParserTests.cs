@@ -27,6 +27,7 @@ public class AgentOutputParserTests
     [InlineData(" - ❌ Device startup failed: fetch failed", AgentSignalKind.StartupFailed)]
     [InlineData("\n⚠️  Remote session expired and could not be renewed.", AgentSignalKind.SessionExpired)]
     [InlineData("\n\U0001F6D1 Shutting down device...", AgentSignalKind.ShuttingDown)]
+    [InlineData("\U0001F6D1 Remote shutdown requested. Exiting...", AgentSignalKind.RemoteShutdownRequested)]
     public void Recognizes_official_cli_lines(string line, AgentSignalKind expected)
         => Assert.Equal(expected, new AgentOutputParser().Parse(line).Kind);
 

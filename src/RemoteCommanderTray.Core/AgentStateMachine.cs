@@ -226,6 +226,7 @@ public sealed class AgentStateMachine
                     AgentState.Error);
 
             case AgentSignalKind.ShuttingDown:
+            case AgentSignalKind.RemoteShutdownRequested:
                 return s;
 
             default:

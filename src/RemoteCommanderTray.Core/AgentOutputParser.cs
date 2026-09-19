@@ -233,8 +233,15 @@ public sealed partial class AgentOutputParser
             return new AgentSignal(AgentSignalKind.StartupFailed, Rest(line, "Device startup failed:"));
         }
 
-        if (line.StartsWith("Shutting down device", StringComparison.OrdinalIgnoreCase)
-            || line.StartsWith("Remote shutdown requested", StringComparison.OrdinalIgnoreCase))
+        // `Shutting down device` is generic cleanup: the official CLI also prints it
+        // after startup failure and from signal handling. Only the explicit remote tool
+        // request is evidence that somebody intentionally wants this device to stay down.
+        if (line.StartsWith("Remote shutdown requested", StringComparison.OrdinalIgnoreCase))
+        {
+            return new AgentSignal(AgentSignalKind.RemoteShutdownRequested, line);
+        }
+
+        if (line.StartsWith("Shutting down device", StringComparison.OrdinalIgnoreCase))
         {
             return new AgentSignal(AgentSignalKind.ShuttingDown, line);
         }
