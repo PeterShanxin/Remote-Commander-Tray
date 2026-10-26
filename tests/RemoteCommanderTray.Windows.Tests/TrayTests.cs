@@ -16,7 +16,7 @@ public sealed class TrayTests
             try
             {
                 var paths = new AppPaths(root); paths.EnsureCreated();
-                var settings = new TraySettings { StartAgentOnLaunch = false, NotificationsEnabled = false,
+                var settings = new TraySettings { StartAgentOnLaunch = false, NotificationsEnabled = false, Language = "en",
                     AgentExecutable = ProcessTests.Dotnet, AgentArguments = $"\"{ProcessTests.Probe}\" ready" };
                 using var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
                 using var tray = new TrayApplicationContext(paths, settings, log, "test");
@@ -76,6 +76,37 @@ public sealed class TrayTests
                 tray?.Dispose();
                 if (Directory.Exists(root)) Directory.Delete(root, true);
             }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(20));
+    }
+
+    [Fact]
+    public async Task Switching_to_simplified_chinese_updates_menu_and_saves_setting()
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            var root = Path.Combine(Path.GetTempPath(), "rct-tray-lang-" + Guid.NewGuid());
+            try
+            {
+                var paths = new AppPaths(root); paths.EnsureCreated();
+                var settings = new TraySettings { Language = "en", StartAgentOnLaunch = false, NotificationsEnabled = false };
+                using var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
+                using var tray = new TrayApplicationContext(paths, settings, log, "test");
+                var toggle = Field<ToolStripMenuItem>(tray, "_toggleAgentItem");
+                var menu = Field<ToolStripMenuItem>(tray, "_languageItem");
+                Assert.Equal("Start agent", toggle.Text);
+                var chinese = menu.DropDownItems.OfType<ToolStripMenuItem>().Single(x => (string?)x.Tag == "zh-CN");
+                chinese.PerformClick();
+                Assert.Equal("启动 Agent", toggle.Text);
+                Assert.Equal("zh-CN", new SettingsStore(paths.SettingsFile).Load().Language);
+                Assert.True(chinese.Checked);
+                tray.Dispose();
+                done.TrySetResult();
+            }
+            catch (Exception ex) { done.TrySetException(ex); }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
         }) { IsBackground = true };
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         await done.Task.WaitAsync(TimeSpan.FromSeconds(20));

@@ -194,3 +194,7 @@ account management、auto-updater、多设备 dashboard。暂不支持 macOS 和
 ## 许可
 
 MIT，见 [LICENSE](LICENSE)。
+
+## 界面语言
+
+本工具支持英文与简体中文。右键托盘图标，选择 **语言 / Language**，即可选用**跟随系统**、**English** 或 **简体中文**。配置会保存到 settings.json 的 language 字段（`auto`、`en`、zh-CN）；切换语言即时生效，无须重启远程 Agent。

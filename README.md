@@ -263,3 +263,7 @@ supported yet.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Language
+
+The tray supports English and Simplified Chinese. Right-click the tray icon and select **Language / 语言** to follow Windows, use English, or use **简体中文**. The choice is saved in settings.json under language (`auto`, `en`, or zh-CN). The language changes immediately without restarting the agent.
