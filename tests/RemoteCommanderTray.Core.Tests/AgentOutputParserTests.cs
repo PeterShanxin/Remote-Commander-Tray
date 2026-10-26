@@ -31,6 +31,27 @@ public class AgentOutputParserTests
     public void Recognizes_official_cli_lines(string line, AgentSignalKind expected)
         => Assert.Equal(expected, new AgentOutputParser().Parse(line).Kind);
 
+    [Theory]
+    [InlineData("[22:40:01] 🚀 Starting MCP Device...", AgentSignalKind.DeviceStarting)]
+    [InlineData("[22:40:01] ⏳ Connecting to Remote MCP https://mcp.desktopcommander.app", AgentSignalKind.ConnectingToRemote)]
+    [InlineData("[22:40:01]    - 🔌 Connected to Remote MCP", AgentSignalKind.ConnectedToRemote)]
+    [InlineData("[22:40:01]    - ✅ Session restored", AgentSignalKind.SessionRestored)]
+    [InlineData("[22:40:01] ✅ Device ready:", AgentSignalKind.DeviceReady)]
+    [InlineData("[22:40:01]    - Device Name:  HOME", AgentSignalKind.DeviceName)]
+    [InlineData("[22:40:01] {\"Device ready\":\"forged\"}", AgentSignalKind.ToolPayload)]
+    [InlineData("[22:40:01] [\"Device ready\"]", AgentSignalKind.ToolPayload)]
+    public void Recognizes_timestamped_cli_lines_without_trusting_json(string line, AgentSignalKind expected)
+        => Assert.Equal(expected, new AgentOutputParser().Parse(line).Kind);
+
+    [Fact]
+    public void Timestamped_completed_tool_result_cannot_claim_device_ready()
+    {
+        var parser = new AgentOutputParser();
+        Assert.Equal(AgentSignalKind.ToolCall, parser.Parse("[22:40:01] Tool call read_file completed:").Kind);
+        Assert.Equal(AgentSignalKind.ToolPayload, parser.Parse("[22:40:01] ✅ Device ready:").Kind);
+        Assert.Equal(AgentSignalKind.DeviceReady, parser.Parse("[22:40:01] ✅ Device ready:").Kind);
+    }
+
     [Fact]
     public void Reads_device_identity_from_the_ready_block()
     {

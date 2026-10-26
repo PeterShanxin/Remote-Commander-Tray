@@ -263,6 +263,9 @@ public sealed partial class AgentOutputParser
     {
         var line = AnsiEscape().Replace(rawLine, string.Empty);
         line = line.Replace('\t', ' ').Trim();
+        // Desktop Commander 0.3.x prefixes console output with [HH:mm:ss].
+        // Remove only a real timestamp, not arbitrary JSON arrays.
+        line = TerminalTimestamp().Replace(line, string.Empty);
         line = ListMarker().Replace(line, string.Empty);
 
         var start = 0;
@@ -348,6 +351,9 @@ public sealed partial class AgentOutputParser
 
     [GeneratedRegex("\\x1b\\[[0-9;]*[A-Za-z]")]
     private static partial Regex AnsiEscape();
+
+    [GeneratedRegex(@"^\[\d{2}:\d{2}:\d{2}\]\s*")]
+    private static partial Regex TerminalTimestamp();
 
     [GeneratedRegex(@"^\s*\d+\.\s+")]
     private static partial Regex ListMarker();
