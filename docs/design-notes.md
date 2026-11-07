@@ -39,7 +39,10 @@ Notification clicks resolve the current prompt, not an old cached authorization 
 
 Ordinary agent.log stores canonical status categories, not raw recognized suffixes.
 Unknown output, tool arguments/results, codes and authorization URLs are omitted.
-The parser rejects JSON/result frames before normalization and keeps stdout/stderr
+The parser strips ANSI escapes and one exact leading ASCII `[HH:mm:ss] ` clock
+emitted by CLI 0.3.1 before checking for JSON/result frames. Other bracket prefixes
+remain payload; removing a clock never removes a following JSON delimiter. Plain
+status lines from older CLI versions remain supported. The parser keeps stdout/stderr
 multiline prompt state separate. This is version-specific observation, not independent
 server-health verification or an authentication/security boundary.
 

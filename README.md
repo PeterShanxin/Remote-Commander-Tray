@@ -202,9 +202,10 @@ connection, MCP command execution and all credentials. The tray only reads the C
 own stdout and stderr to work out what to draw.
 
 CLI status parsing is version-specific, best-effort observation rather than an
-independent server health check. Tool/result frames and JSON payloads are excluded
-before status normalization. The tray is not a security sandbox for the commands
-Desktop Commander executes.
+independent server health check. Both older plain status lines and the `[HH:mm:ss] `
+prefix observed in CLI 0.3.1 are recognized. Only that exact clock prefix is removed
+before the JSON/tool-result guards; payloads remain excluded from status matching.
+The tray is not a security sandbox for the commands Desktop Commander executes.
 
 Each agent is created atomically inside its own Windows Job Object. Creation or cleanup
 failure stops recovery instead of falling back to an uncontained process. Normal

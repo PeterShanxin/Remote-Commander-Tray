@@ -5,12 +5,19 @@
 Run on Windows with the .NET 8 SDK:
 
 ```powershell
-dotnet test RemoteCommanderTray.sln -c Release
-dotnet test RemoteCommanderTray.sln -c Debug
+dotnet build RemoteCommanderTray.sln -c Release
+dotnet test RemoteCommanderTray.sln -c Release --no-build
+dotnet run --project tests/RemoteCommanderTray.Windows.Integration -c Release --no-build
+dotnet build RemoteCommanderTray.sln -c Debug
+dotnet test RemoteCommanderTray.sln -c Debug --no-build
+dotnet run --project tests/RemoteCommanderTray.Windows.Integration -c Debug --no-build
 ```
 
-The core suite has 138 cases. The separate Windows.Integration harness retains 10 native scenarios, including owner-crash cleanup and environment inheritance. Windows integration adds 12 cases covering actual
-process/job lifetime, isolated registry adapters and STA WinForms tray controls.
+The core suite has 194 cases. The separate Windows.Integration harness retains 10
+native scenarios, including owner-crash cleanup and environment inheritance. Windows
+tests add 13 cases covering actual process/job lifetime, isolated registry adapters
+and STA WinForms tray controls. Build the solution before running the standalone
+integration harness; `dotnet test` alone does not build that executable.
 CI runs the full suite on native x64 and ARM64 Windows with .NET 8, then publishes
 both architectures. Publishing alone is not counted as native runtime verification.
 
@@ -23,13 +30,26 @@ one-shot timeout/cancellation, concurrent UTF-8 streams and synthetic tray comma
 Startup tests write only HKCU\Software\RemoteCommanderTray.Tests\<random-id> and remove
 that private test key. They never modify the real Run or StartupApproved entries.
 
+Timestamped CLI 0.3.1 fixtures cover status and authentication on both output streams,
+reconnect/recovery without process replacement, ANSI decoration, and a ready device
+remaining Online after the five-minute stall deadline. Negative cases retain JSON,
+quoted strings, arrays, unknown or malformed bracket prefixes, and multiline tool
+results as payload. Authentication details and tool content remain absent from logs.
+
 ## Local evidence
 
-The fix revision was exercised on Windows ARM64 with SDK 9.0.318 / runtime 9.0.20,
-using DOTNET_ROLL_FORWARD=Major for the net8 test assemblies. Release and Debug both passed all
-122 core and 12 Windows cases before reconciliation. The reconciled Release suite passed all 138 core cases, 12 Windows tests, and 10 native integration scenarios. Exact .NET 8 verification belongs to the CI result,
-not this local roll-forward run. No real device, OAuth flow or production startup
-entry was launched/changed by the tests. Test children are synthetic and job-scoped.
+The timestamp-prefix fix was exercised on 2026-11-07 on Windows ARM64 with SDK
+8.0.427 / runtime 8.0.33, using a task-local SDK without major-version roll-forward.
+The same 27 focused cases first produced 26 failures and one pass against the old
+parser, including the ready device becoming Error after the simulated stall deadline;
+all 27 passed after the fix. Release and Debug each passed all 194 core cases, 13
+Windows tests and 10 native integration scenarios. The generated icon matched the
+committed file. Native x64 execution remains a separate CI check for this revision;
+cross-publishing an x64 executable does not prove native x64 runtime behavior.
+
+No real Remote Device, OAuth flow or production startup entry was launched/changed
+by the tests. Test children are synthetic and job-scoped. Real installed-tray UI,
+authentication and sign-in acceptance still require the manual checks below.
 
 ## Manual release acceptance
 

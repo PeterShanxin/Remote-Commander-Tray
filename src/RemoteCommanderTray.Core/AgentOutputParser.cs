@@ -14,8 +14,8 @@ namespace RemoteCommanderTray.Core;
 /// decides what a signal means for the tray - that is <see cref="AgentStateMachine"/>'s job.
 /// </para>
 /// <para>
-/// Matching is done on a normalized line (ANSI codes, emoji, bullets and list markers
-/// stripped) with <c>StartsWith</c> rather than <c>Contains</c>, so that a logged tool
+/// Matching is done on a normalized line (CLI clock prefixes, ANSI codes, emoji,
+/// bullets and list markers stripped) with <c>StartsWith</c> rather than <c>Contains</c>, so that a logged tool
 /// call carrying arbitrary text cannot forge a status change.
 /// </para>
 /// </remarks>
@@ -250,8 +250,8 @@ public sealed partial class AgentOutputParser
     }
 
     /// <summary>
-    /// Strips ANSI escapes, then any leading decoration (emoji, bullets, "1." list
-    /// markers and whitespace) so that the payload can be matched by prefix.
+    /// Strips ANSI escapes and the CLI clock prefix, then leading decoration (emoji,
+    /// bullets, "1." list markers and whitespace) so that the payload can be matched by prefix.
     /// </summary>
     internal static string Normalize(string rawLine)
     {
@@ -262,6 +262,9 @@ public sealed partial class AgentOutputParser
     private static string StripLeadingDecoration(string rawLine, bool stopAtJsonDelimiter)
     {
         var line = AnsiEscape().Replace(rawLine, string.Empty);
+        // CLI 0.3.1 timestamps console lines. Keep any following JSON delimiter visible
+        // to the payload guard rather than treating arbitrary bracketed text as decoration.
+        line = TerminalTimestamp().Replace(line, string.Empty);
         line = line.Replace('\t', ' ').Trim();
         line = ListMarker().Replace(line, string.Empty);
 
@@ -348,6 +351,9 @@ public sealed partial class AgentOutputParser
 
     [GeneratedRegex("\\x1b\\[[0-9;]*[A-Za-z]")]
     private static partial Regex AnsiEscape();
+
+    [GeneratedRegex(@"^\[(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\] ")]
+    private static partial Regex TerminalTimestamp();
 
     [GeneratedRegex(@"^\s*\d+\.\s+")]
     private static partial Regex ListMarker();

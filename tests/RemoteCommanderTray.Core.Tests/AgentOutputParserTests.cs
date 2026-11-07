@@ -31,6 +31,55 @@ public class AgentOutputParserTests
     public void Recognizes_official_cli_lines(string line, AgentSignalKind expected)
         => Assert.Equal(expected, new AgentOutputParser().Parse(line).Kind);
 
+    // CLI 0.3.1 prefixes each nonempty console line with an ASCII [HH:mm:ss] clock.
+    [Theory]
+    [InlineData("[00:00:00] \U0001F680 Starting MCP Device...", AgentSignalKind.DeviceStarting)]
+    [InlineData("[16:25:06] ⏳ Connecting to Remote MCP https://example.com", AgentSignalKind.ConnectingToRemote)]
+    [InlineData("[16:25:06]    - \U0001F50C Connected to Remote MCP", AgentSignalKind.ConnectedToRemote)]
+    [InlineData("[16:25:06]    - ✅ Session restored", AgentSignalKind.SessionRestored)]
+    [InlineData("[16:25:06] \U0001F510 Starting device authorization flow...", AgentSignalKind.AuthenticationStarted)]
+    [InlineData("[16:25:06]    - ✅ Authorization successful!", AgentSignalKind.AuthorizationSucceeded)]
+    [InlineData("[23:59:59] ✅ Device ready:", AgentSignalKind.DeviceReady)]
+    [InlineData("[16:25:06] \U0001F50C Device marked as online", AgentSignalKind.DeviceOnline)]
+    [InlineData("[16:25:06] \U0001F50C Device marked as offline", AgentSignalKind.DeviceOffline)]
+    [InlineData("[16:25:06] ✅ Channel subscribed", AgentSignalKind.ChannelSubscribed)]
+    [InlineData("[16:25:06] ✅ Channel self-healed", AgentSignalKind.ChannelSubscribed)]
+    [InlineData("[16:25:06] ❌ Channel error: websocket closed", AgentSignalKind.ChannelDisrupted)]
+    [InlineData("[16:25:06] ⏱️ Channel subscription timed out, Reconnecting...", AgentSignalKind.ChannelDisrupted)]
+    [InlineData("[16:25:06] \U0001F504 Recreating channel... (attempt 2)", AgentSignalKind.ChannelDisrupted)]
+    [InlineData("[16:25:06]  - ❌ Device startup failed: fetch failed", AgentSignalKind.StartupFailed)]
+    [InlineData("[16:25:06] ⚠️ Remote session expired and could not be renewed.", AgentSignalKind.SessionExpired)]
+    [InlineData("[16:25:06] \U0001F6D1 Shutting down device...", AgentSignalKind.ShuttingDown)]
+    [InlineData("[16:25:06] \U0001F6D1 Remote shutdown requested. Exiting...", AgentSignalKind.RemoteShutdownRequested)]
+    [InlineData("\u001b[32m[16:25:06] ✅ Device ready:\u001b[0m", AgentSignalKind.DeviceReady)]
+    [InlineData("[16:25:06] \u001b[32m✅ Device ready:\u001b[0m", AgentSignalKind.DeviceReady)]
+    [InlineData("[16:25:06]    ", AgentSignalKind.None)]
+    public void Recognizes_timestamped_cli_lines(string line, AgentSignalKind expected)
+        => Assert.Equal(expected, new AgentOutputParser().Parse(line).Kind);
+
+    [Theory]
+    [InlineData("[16:25:06] {\"Device ready\":\"forged\"}")]
+    [InlineData("[16:25:06] [\"Device marked as online\"]")]
+    [InlineData("[16:25:06] \"Device ready:\"")]
+    [InlineData("\u001b[32m[16:25:06] ✅ {\"Session restored\":true}\u001b[0m")]
+    [InlineData("[16:25:06] 1. [\"Remote session expired\"]")]
+    [InlineData("[16:25:06]    - ❌ {\"Device marked as online\":true}")]
+    public void Timestamped_json_cannot_forge_a_status_signal(string line)
+        => Assert.Equal(AgentSignalKind.ToolPayload, new AgentOutputParser().Parse(line).Kind);
+
+    [Theory]
+    [InlineData("[24:00:00] Device ready:")]
+    [InlineData("[12:60:00] Device ready:")]
+    [InlineData("[12:34:60] Device ready:")]
+    [InlineData("[1:34:56] Device ready:")]
+    [InlineData("[12:٣٤:56] Device ready:")]
+    [InlineData("[12:34:56]Device ready:")]
+    [InlineData("[DEBUG] Device ready:")]
+    [InlineData("[12:34:56, \"Device ready:\"]")]
+    [InlineData("[12:34:56] [12:34:56] Device ready:")]
+    public void Other_bracket_prefixes_remain_payload(string line)
+        => Assert.Equal(AgentSignalKind.ToolPayload, new AgentOutputParser().Parse(line).Kind);
+
     [Fact]
     public void Reads_device_identity_from_the_ready_block()
     {
