@@ -1,3 +1,4 @@
+using System.Reflection;
 using RemoteCommanderTray.Core;
 using Xunit;
 
@@ -65,18 +66,98 @@ public class AgentSupervisorTests : IDisposable
     }
 
     [Fact]
-    public async Task A_dropped_channel_does_not_restart_the_process()
+    public async Task Timestamped_ready_output_prevents_the_five_minute_false_error()
+    {
+        var now = new DateTimeOffset(2026, 11, 7, 8, 25, 6, TimeSpan.Zero);
+        var notices = new List<TrayNotification>();
+        await using var supervisor = new AgentSupervisor(
+            new AgentStateMachine(() => now), _factory,
+            new AgentCommandResolver(new InstalledAgentEnvironment()),
+            () => _settings, _log, clock: () => now);
+        supervisor.Notification += (_, notice) => notices.Add(notice);
+
+        await supervisor.StartAsync();
+        var agent = _factory.Latest;
+        agent.Emit("[16:25:06] \U0001F680 Starting MCP Device...");
+        agent.Emit("[16:25:06] ⏳ Connecting to Remote MCP https://example.com");
+        agent.Emit("[16:25:06] ✅ Device ready:");
+        agent.Emit("[16:25:06]    - Device Name:  TEST-PC");
+
+        now = now.AddMinutes(6);
+        // Trigger the existing timer callback without a wall-clock wait.
+        typeof(AgentSupervisor).GetMethod("RunHealthCheck", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(supervisor, null);
+
+        Assert.Equal(AgentState.Online, supervisor.Snapshot.State);
+        Assert.Equal("Online", supervisor.Snapshot.StateLabel);
+        Assert.Equal("TEST-PC", supervisor.Snapshot.DeviceName);
+        Assert.True(supervisor.IsRunning);
+        Assert.Equal(1, _factory.CreatedCount);
+        Assert.False(agent.StopRequested);
+        Assert.DoesNotContain(notices, n => n.Kind == NotificationKind.ConnectionStalled);
+        Assert.Contains(_log.Tail(50), line => line.Contains("Device ready.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Timestamped_tool_content_cannot_claim_online_or_reach_logs()
     {
         await _supervisor.StartAsync();
         var agent = _factory.Latest;
-        agent.Emit("✅ Device ready:");
-        agent.Emit("❌ Channel error: websocket closed");
+        agent.Emit("[16:25:06] \U0001F527 Received tool call 42: write_file {\"content\":\"Device ready: private-result-sentinel\"} metadata: {}");
+        agent.Emit("[16:25:06] ✅ Tool call write_file completed:");
+        agent.Emit("[16:25:06] Device marked as online private-result-sentinel");
+        agent.Emit("[16:25:06] {\"Device ready\":\"private-result-sentinel\"}");
+
+        Assert.Equal(AgentState.Starting, _supervisor.Snapshot.State);
+        var logged = string.Join('\n', _log.Tail(50));
+        Assert.DoesNotContain("private-result-sentinel", logged);
+        Assert.Contains("Tool activity (arguments and results omitted).", logged);
+        Assert.Contains("tool result omitted", logged);
+
+        agent.Emit("[16:25:07] ✅ Device ready:");
+        Assert.Equal(AgentState.Online, _supervisor.Snapshot.State);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Timestamped_authentication_prompts_keep_sign_in_details_out_of_logs(bool isError)
+    {
+        await _supervisor.StartAsync();
+        var agent = _factory.Latest;
+        agent.Emit("[16:25:06] \U0001F510 Starting device authorization flow...", isError);
+        agent.Emit("[16:25:06]    1. Verify this device in your browser:", isError);
+        agent.Emit("[16:25:06]       https://example.com/device?code=TEST-CODE", isError);
+        agent.Emit("[16:25:06]    2. Make sure the code matches:", isError);
+        agent.Emit("[16:25:06]       TEST-CODE", isError);
+
+        Assert.Equal(AgentState.AuthenticationRequired, _supervisor.Snapshot.State);
+        Assert.Equal("https://example.com/device?code=TEST-CODE", _supervisor.Snapshot.VerificationUri);
+        Assert.Equal("TEST-CODE", _supervisor.Snapshot.UserCode);
+        Assert.Single(_notifications, n => n.Kind == NotificationKind.AuthenticationRequired);
+        var logged = string.Join('\n', _log.Tail(50));
+        Assert.DoesNotContain("example.com", logged);
+        Assert.DoesNotContain("TEST-CODE", logged);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("[16:25:06] ")]
+    public async Task A_dropped_channel_does_not_restart_the_process(string prefix)
+    {
+        await _supervisor.StartAsync();
+        var agent = _factory.Latest;
+        agent.Emit(prefix + "✅ Device ready:");
+        agent.Emit(prefix + "❌ Channel error: websocket closed");
 
         await Task.Delay(120);
 
         Assert.Equal(1, _factory.CreatedCount);
         Assert.Equal(AgentState.Connecting, _supervisor.Snapshot.State);
         Assert.False(agent.StopRequested);
+
+        agent.Emit(prefix + "✅ Channel subscribed");
+        Assert.Equal(AgentState.Online, _supervisor.Snapshot.State);
     }
 
     [Fact]
