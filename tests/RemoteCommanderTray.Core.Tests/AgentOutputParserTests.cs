@@ -198,4 +198,26 @@ public class AgentOutputParserTests
         => Assert.Equal(
             AgentSignalKind.DeviceStarting,
             new AgentOutputParser().Parse("[32m\U0001F680 Starting MCP Device...[0m").Kind);
+    [Theory]
+    [InlineData("[21:28:38] 🚀 Starting MCP Device...", AgentSignalKind.DeviceStarting)]
+    [InlineData("[21:28:39]   - 🔌 Connected to Remote MCP", AgentSignalKind.ConnectedToRemote)]
+    [InlineData("[21:28:40] ✅ Device ready:", AgentSignalKind.DeviceReady)]
+    [InlineData("[21:28:41] 🔌 Device marked as online", AgentSignalKind.DeviceOnline)]
+    [InlineData("\u001b[36m[21:28:42] ✅ Channel subscribed\u001b[0m", AgentSignalKind.ChannelSubscribed)]
+    public void Timestamped_cli_output_is_recognized(string rawLine, AgentSignalKind expected)
+        => Assert.Equal(expected, new AgentOutputParser().Parse(rawLine).Kind);
+
+    [Theory]
+    [InlineData("[21:28:42] {\"Device marked as online\":true}")]
+    [InlineData("[21:28:42] [\"Device ready\"]")]
+    public void Timestamped_json_remains_payload(string line)
+        => Assert.Equal(AgentSignalKind.ToolPayload, new AgentOutputParser().Parse(line).Kind);
+
+    [Fact]
+    public void Timestamped_tool_result_does_not_forge_status()
+    {
+        var p = new AgentOutputParser();
+        Assert.Equal(AgentSignalKind.ToolCall, p.Parse("[21:28:41] ✅ Tool call read_file completed:").Kind);
+        Assert.Equal(AgentSignalKind.ToolPayload, p.Parse("[21:28:42] Device marked as online").Kind);
+    }
 }

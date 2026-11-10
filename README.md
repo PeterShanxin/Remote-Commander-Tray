@@ -259,3 +259,9 @@ supported yet.
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Language
+
+The tray supports English and Simplified Chinese. Right-click the tray icon and select **Language / 语言** to follow Windows, use English, or use **简体中文**. The choice is saved in settings.json under language (uto, n, or zh-CN). The language changes immediately without restarting the agent.
+
+Desktop Commander Remote 0.3.1+ adds timestamps to console output. The tray ignores the strict [HH:mm:ss]  prefix when classifying lifecycle messages while still treating JSON/tool payloads as data.

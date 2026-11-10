@@ -61,6 +61,10 @@ public sealed class TraySettings
     [JsonPropertyName("verboseAgentLog")]
     public bool VerboseAgentLog { get; set; }
 
+    /// <summary>Tray UI language: auto, en, or zh-CN.</summary>
+    [JsonPropertyName("language")]
+    public string Language { get; set; } = "auto";
+
     /// <summary>Show desktop notifications for events that need the user.</summary>
     [JsonPropertyName("notificationsEnabled")]
     public bool NotificationsEnabled { get; set; } = true;
@@ -68,6 +72,7 @@ public sealed class TraySettings
     /// <summary>Clamps anything a hand-edited file could have made nonsensical.</summary>
     public TraySettings Normalized()
     {
+        Language = Language is "auto" or "en" or "zh-CN" ? Language : "auto";
         StalledConnectionMinutes = Math.Clamp(StalledConnectionMinutes, 1, 120);
         StartFailureAlertThreshold = Math.Clamp(StartFailureAlertThreshold, 1, 20);
         HealthyRunSeconds = Math.Clamp(HealthyRunSeconds, 5, 3600);

@@ -189,3 +189,9 @@ account management、auto-updater、多设备 dashboard。暂不支持 macOS 和
 ## 许可
 
 MIT，见 [LICENSE](LICENSE)。
+
+## 界面语言
+
+本工具支持英文与简体中文。右键托盘图标，选择 **语言 / Language**，即可选用**跟随系统**、**English** 或 **简体中文**。配置会保存到 settings.json 的 language 字段（uto、n、zh-CN）；切换语言即时生效，无须重启远程 Agent。
+
+已兼容 Desktop Commander Remote 0.3.1 起命令行输出中的 [HH:mm:ss]  时间戳。状态解析器仅剥离严格匹配的时间戳前缀，仍会将 JSON 和工具结果视为数据，避免伪造在线状态。

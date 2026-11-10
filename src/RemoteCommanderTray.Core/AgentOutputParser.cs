@@ -57,10 +57,11 @@ public sealed partial class AgentOutputParser
         // "\u001b[32m{\"Device ready\":...}" does not start with a delimiter while the
         // escape is still attached, so a raw check waves it through - and Normalize then
         // strips the escape and the brace, leaving a line that begins "Device ready".
-        var undecorated = StripLeadingDecoration(rawLine, stopAtJsonDelimiter: true);
+        var cliLine = StripTerminalTimestamp(rawLine);
+        var undecorated = StripLeadingDecoration(cliLine, stopAtJsonDelimiter: true);
         if (undecorated.StartsWith('{') || undecorated.StartsWith('[') || undecorated.StartsWith('"'))
             return new AgentSignal(AgentSignalKind.ToolPayload);
-        var line = Normalize(rawLine);
+        var line = Normalize(cliLine);
         if (line.Length == 0)
         {
             return AgentSignal.None;
@@ -253,6 +254,16 @@ public sealed partial class AgentOutputParser
     /// Strips ANSI escapes and the CLI clock prefix, then leading decoration (emoji,
     /// bullets, "1." list markers and whitespace) so that the payload can be matched by prefix.
     /// </summary>
+    // Desktop Commander >=0.3.1 prefixes console output with [HH:mm:ss].
+    // Remove only the exact CLI prefix before JSON/payload guarding and status parsing.
+    private static string StripTerminalTimestamp(string rawLine)
+    {
+        var stripped = AnsiEscape().Replace(rawLine, string.Empty).TrimStart();
+        return TerminalTimestamp().Replace(stripped, string.Empty);
+    }
+
+    [GeneratedRegex(@"^\[\d{2}:\d{2}:\d{2}\] ")]
+    private static partial Regex TerminalTimestamp();
     internal static string Normalize(string rawLine)
     {
         var line = StripLeadingDecoration(rawLine, stopAtJsonDelimiter: false);

@@ -17,7 +17,7 @@ internal sealed class AboutForm : Form
 
     public AboutForm(string version, Icon icon, string dataFolder)
     {
-        Text = "About Remote Commander Tray";
+        Text = UiStrings.Get("About Remote Commander Tray");
         Icon = icon;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -45,28 +45,25 @@ internal sealed class AboutForm : Form
 
         layout.Controls.Add(new Label
         {
-            Text = $"Version {version}   -   MIT licensed",
+            Text = UiStrings.Format("Version {0}   -   MIT licensed", version),
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 12),
         });
 
         layout.Controls.Add(new Label
         {
-            Text = "A tray companion that runs and supervises the official Desktop "
-                   + "Commander Remote Device. It never handles sign-in tokens: "
-                   + "authentication, device identity and the Remote MCP connection all "
-                   + "stay with the official CLI.",
+            Text = UiStrings.Get("A tray companion that runs and supervises the official Desktop Commander Remote Device. It never handles sign-in tokens: authentication, device identity and the Remote MCP connection all stay with the official CLI."),
             AutoSize = true,
             MaximumSize = new Size(390, 0),
             Margin = new Padding(0, 0, 0, 12),
         });
 
-        layout.Controls.Add(CreateLink("Project page", ProjectUrl));
-        layout.Controls.Add(CreateLink("Desktop Commander (upstream)", UpstreamUrl));
+        layout.Controls.Add(CreateLink(UiStrings.Get("Project page"), ProjectUrl));
+        layout.Controls.Add(CreateLink(UiStrings.Get("Desktop Commander (upstream)"), UpstreamUrl));
 
         var folderLink = new LinkLabel
         {
-            Text = $"Data folder: {dataFolder}",
+            Text = UiStrings.Format("Data folder: {0}", dataFolder),
             AutoSize = true,
             MaximumSize = new Size(390, 0),
             Margin = new Padding(0, 8, 0, 12),
@@ -76,7 +73,7 @@ internal sealed class AboutForm : Form
 
         var close = new Button
         {
-            Text = "Close",
+            Text = UiStrings.Get("Close"),
             DialogResult = DialogResult.OK,
             AutoSize = true,
             Anchor = AnchorStyles.Right,

@@ -39,6 +39,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _reauthenticateItem;
     private readonly ToolStripMenuItem _toggleAgentItem;
     private readonly ToolStripMenuItem _launchAtSignInItem;
+    private readonly ToolStripMenuItem _languageItem;
 
     private AgentSnapshot _snapshot = AgentSnapshot.Initial;
     private bool _busy;
@@ -56,6 +57,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _log = log;
         _version = version;
         _settings = () => settings;
+        UiStrings.Configure(settings.Language);
 
         // A real control gives a dependable BeginInvoke target for supervisor callbacks,
         // which arrive on thread-pool threads.
@@ -79,24 +81,40 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _log,
             verboseLog: _verboseLog);
 
-        _headerItem = new ToolStripMenuItem("Starting...") { Enabled = false };
-        _detailItem = new ToolStripMenuItem("Last connected: never") { Enabled = false };
+        _headerItem = new ToolStripMenuItem(UiStrings.Get("Starting...")) { Enabled = false };
+        _detailItem = new ToolStripMenuItem(UiStrings.Get("Last connected: never")) { Enabled = false };
         _signInSeparator = new ToolStripSeparator { Visible = false };
-        _openSignInItem = new ToolStripMenuItem("Open sign-in page", null, (_, _) => OpenSignInPage())
+        _openSignInItem = new ToolStripMenuItem(UiStrings.Get("Open sign-in page"), null, (_, _) => OpenSignInPage())
         {
             Visible = false,
         };
-        _copyCodeItem = new ToolStripMenuItem("Copy sign-in code", null, (_, _) => CopySignInCode())
+        _copyCodeItem = new ToolStripMenuItem(UiStrings.Get("Copy sign-in code"), null, (_, _) => CopySignInCode())
         {
             Visible = false,
         };
-        _restartItem = new ToolStripMenuItem("Restart connection", null, (_, _) => Run(_supervisor.RestartAsync));
-        _reauthenticateItem = new ToolStripMenuItem("Re-authenticate...", null, (_, _) => Reauthenticate());
-        _toggleAgentItem = new ToolStripMenuItem("Stop agent", null, (_, _) => ToggleAgent());
-        _launchAtSignInItem = new ToolStripMenuItem("Launch at sign-in", null, (_, _) => ToggleLaunchAtSignIn())
+        _restartItem = new ToolStripMenuItem(UiStrings.Get("Restart connection"), null, (_, _) => Run(_supervisor.RestartAsync));
+        _reauthenticateItem = new ToolStripMenuItem(UiStrings.Get("Re-authenticate..."), null, (_, _) => Reauthenticate());
+        _toggleAgentItem = new ToolStripMenuItem(UiStrings.Get("Stop agent"), null, (_, _) => ToggleAgent());
+        _launchAtSignInItem = new ToolStripMenuItem(UiStrings.Get("Launch at sign-in"), null, (_, _) => ToggleLaunchAtSignIn())
         {
             CheckOnClick = false,
         };
+
+        _languageItem = new ToolStripMenuItem("Language / 语言");
+        foreach (var (code, label) in new[]
+        {
+            ("auto", "Follow Windows / 跟随系统"),
+            ("en", "English"),
+            ("zh-CN", "简体中文"),
+        })
+        {
+            var selected = code;
+            _languageItem.DropDownItems.Add(new ToolStripMenuItem(label, null, (_, _) => ChangeLanguage(selected))
+            {
+                Tag = code,
+                CheckOnClick = false,
+            });
+        }
 
         _menu = new ContextMenuStrip();
         _menu.Items.AddRange(
@@ -111,13 +129,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _reauthenticateItem,
             _toggleAgentItem,
             new ToolStripSeparator(),
-            new ToolStripMenuItem("Open Remote MCP", null, (_, _) => Shell.OpenUrl(_settings().RemoteMcpUrl)),
-            new ToolStripMenuItem("Open logs", null, (_, _) => OpenLogs()),
-            new ToolStripMenuItem("Copy diagnostics", null, (_, _) => CopyDiagnostics()),
+            new ToolStripMenuItem(UiStrings.Get("Open Remote MCP"), null, (_, _) => Shell.OpenUrl(_settings().RemoteMcpUrl)) { Tag = "Open Remote MCP" },
+            new ToolStripMenuItem(UiStrings.Get("Open logs"), null, (_, _) => OpenLogs()) { Tag = "Open logs" },
+            new ToolStripMenuItem(UiStrings.Get("Copy diagnostics"), null, (_, _) => CopyDiagnostics()) { Tag = "Copy diagnostics" },
             new ToolStripSeparator(),
             _launchAtSignInItem,
-            new ToolStripMenuItem("About", null, (_, _) => ShowAbout()),
-            new ToolStripMenuItem("Exit", null, (_, _) => ExitApplication()),
+            _languageItem,
+            new ToolStripMenuItem(UiStrings.Get("About"), null, (_, _) => ShowAbout()) { Tag = "About" },
+            new ToolStripMenuItem(UiStrings.Get("Exit"), null, (_, _) => ExitApplication()) { Tag = "Exit" },
         ]);
         _menu.Opening += (_, _) => { RefreshMenu(); _menuTimer.Start(); };
         _menu.Closed += (_, _) => _menuTimer.Stop();
@@ -160,20 +179,30 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         var snapshot = _snapshot;
 
-        _headerItem.Text = $"{GlyphFor(snapshot.State)} {snapshot.StateLabel}{DeviceSuffix(snapshot)}";
+        _headerItem.Text = $"{GlyphFor(snapshot.State)} {UiStrings.Get(snapshot.StateLabel)}{DeviceSuffix(snapshot)}";
         _detailItem.Text = BuildDetailLine(snapshot);
+        _languageItem.Text = UiStrings.Get("Language / 语言");
+        foreach (ToolStripMenuItem option in _languageItem.DropDownItems)
+            option.Checked = option.Tag is string lang && lang == _settings().Language;
+        _restartItem.Text = UiStrings.Get("Restart connection");
+        _reauthenticateItem.Text = UiStrings.Get("Re-authenticate...");
+        foreach (var item in _menu.Items.OfType<ToolStripMenuItem>())
+        {
+            if (item.Tag is string english)
+                item.Text = UiStrings.Get(english);
+        }
 
         var signInVisible = snapshot.State == AgentState.AuthenticationRequired;
         _signInSeparator.Visible = signInVisible;
         _openSignInItem.Visible = signInVisible;
         _openSignInItem.Enabled = !_busy && (snapshot.RequiresReauthentication || !string.IsNullOrWhiteSpace(snapshot.VerificationUri));
-        _openSignInItem.Text = snapshot.RequiresReauthentication ? "Sign in again..." : "Open sign-in page";
+        _openSignInItem.Text = UiStrings.Get(snapshot.RequiresReauthentication ? "Sign in again..." : "Open sign-in page");
         _copyCodeItem.Visible = signInVisible && !string.IsNullOrWhiteSpace(snapshot.UserCode);
         _copyCodeItem.Text = snapshot.UserCode is null
-            ? "Copy sign-in code"
-            : $"Copy code: {snapshot.UserCode}";
+            ? UiStrings.Get("Copy sign-in code")
+            : UiStrings.Format("Copy code: {0}", snapshot.UserCode);
 
-        _toggleAgentItem.Text = snapshot.AgentWanted ? "Stop agent" : "Start agent";
+        _toggleAgentItem.Text = UiStrings.Get(snapshot.AgentWanted ? "Stop agent" : "Start agent");
         _restartItem.Enabled = !_busy;
         _reauthenticateItem.Enabled = !_busy;
         _toggleAgentItem.Enabled = !_busy;
@@ -190,9 +219,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _launchAtSignInItem.Checked = state == StartupState.Enabled;
         _launchAtSignInItem.Text = state switch
         {
-            StartupState.DisabledByWindows => "Launch at sign-in (turned off in Windows)",
-            StartupState.Unknown => "Launch at sign-in (check Windows settings)",
-            _ => "Launch at sign-in",
+            StartupState.DisabledByWindows => UiStrings.Get("Launch at sign-in (turned off in Windows)"),
+            StartupState.Unknown => UiStrings.Get("Launch at sign-in (check Windows settings)"),
+            _ => UiStrings.Get("Launch at sign-in"),
         };
     }
 
@@ -213,7 +242,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (snapshot.NextRestartUtc is { } due)
         {
             var seconds = Math.Max(0, (int)(due - DateTimeOffset.UtcNow).TotalSeconds);
-            return $"Retrying in {seconds}s (attempt {snapshot.RestartCount})";
+            return UiStrings.Format("Retrying in {0}s (attempt {1})", seconds, snapshot.RestartCount);
         }
 
         if (snapshot.State is AgentState.Error or AgentState.AuthenticationRequired && !string.IsNullOrWhiteSpace(snapshot.LastError))
@@ -222,14 +251,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         return snapshot.LastConnectedUtc is { } connected
-            ? $"Last connected: {connected.ToLocalTime():HH:mm}"
-            : "Last connected: never";
+            ? UiStrings.Format("Last connected: {0}", connected.ToLocalTime().ToString("HH:mm"))
+            : UiStrings.Get("Last connected: never");
     }
 
     private static string BuildTooltip(AgentSnapshot snapshot)
     {
         // NotifyIcon.Text refuses anything longer than 63 characters.
-        var full = $"Remote Commander - {snapshot.StateLabel}{DeviceSuffix(snapshot)}";
+        var full = $"Remote Commander - {UiStrings.Get(snapshot.StateLabel)}{DeviceSuffix(snapshot)}";
         return full.Length <= TooltipMaxLength
             ? full
             : Truncate(full, TooltipMaxLength);
@@ -239,6 +268,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
         => value.Length <= maxLength ? value : value[..(maxLength - 1)] + "…";
 
     // --- commands --------------------------------------------------------
+
+    private void ChangeLanguage(string language)
+    {
+        var settings = _settings();
+        var previous = settings.Language;
+        settings.Language = language;
+        if (!new SettingsStore(_paths.SettingsFile).TrySave(settings, out var error))
+        {
+            settings.Language = previous;
+            MessageBox.Show(error ?? "Unable to save language selection.", "Remote Commander Tray",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        UiStrings.Configure(settings.Language);
+        RefreshMenu();
+        ApplySnapshot(_snapshot);
+    }
 
     private void ToggleAgent()
     {
@@ -255,10 +302,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void Reauthenticate()
     {
         var answer = MessageBox.Show(
-            "Sign out of Desktop Commander on this device and sign in again?\n\n"
-            + "The official Desktop Commander CLI clears its own saved credentials and "
-            + "opens your browser. Remote Commander Tray never reads or stores them.",
-            "Re-authenticate",
+            UiStrings.Get("Sign out of Desktop Commander on this device and sign in again?\n\nThe official Desktop Commander CLI clears its own saved credentials and opens your browser. Remote Commander Tray never reads or stores them."),
+            UiStrings.Get("Re-authenticate"),
             MessageBoxButtons.OKCancel,
             MessageBoxIcon.Question,
             MessageBoxDefaultButton.Button1);
@@ -275,21 +320,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (!Shell.OpenUrl(_snapshot.VerificationUri))
         {
             MessageBox.Show(
-                "No sign-in page has been reported yet. Open logs to see what the agent is doing.",
+                UiStrings.Get("No sign-in page has been reported yet. Open logs to see what the agent is doing."),
                 "Remote Commander Tray",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
         }
     }
 
-    private void CopySignInCode() => CopyToClipboard(_snapshot.UserCode, "Sign-in code copied.");
+    private void CopySignInCode() => CopyToClipboard(_snapshot.UserCode, UiStrings.Get("Sign-in code copied."));
 
     private void OpenLogs()
     {
         if (!Shell.OpenFile(_log.Path) && !Shell.RevealInExplorer(_paths.LogDirectory))
         {
             MessageBox.Show(
-                $"Could not open the log folder:\n{_paths.LogDirectory}",
+                UiStrings.Format("Could not open the log folder:\n{0}", _paths.LogDirectory),
                 "Remote Commander Tray",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
@@ -307,7 +352,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             StartupRegistration.GetState());
 
         var report = DiagnosticsReport.Build(_snapshot, context);
-        CopyToClipboard(report, "Diagnostics copied to the clipboard.");
+        CopyToClipboard(report, UiStrings.Get("Diagnostics copied to the clipboard."));
     }
 
     private void ToggleLaunchAtSignIn()
@@ -317,8 +362,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             // Windows owns this decision; writing the Run value again would not clear it.
             var open = MessageBox.Show(
-                "Windows startup is disabled or its state could not be verified.\n\n"
-                + "Check or re-enable it in Windows Startup Apps settings now?",
+                UiStrings.Get("Windows startup is disabled or its state could not be verified.\n\nCheck or re-enable it in Windows Startup Apps settings now?"),
                 "Launch at sign-in",
                 MessageBoxButtons.OKCancel,
                 MessageBoxIcon.Information);
@@ -343,7 +387,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _log.Write(LogSource.Tray, $"Could not change launch at sign-in: {error}");
         MessageBox.Show(
-            $"Could not change the startup setting:\n{error}",
+            UiStrings.Format("Could not change the startup setting:\n{0}", error),
             "Remote Commander Tray",
             MessageBoxButtons.OK,
             MessageBoxIcon.Warning);
@@ -414,7 +458,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _ => ToolTipIcon.Error,
         };
 
-        _notifyIcon.ShowBalloonTip(10_000, notification.Title, notification.Message, icon);
+        _notifyIcon.ShowBalloonTip(10_000, UiStrings.Get(notification.Title), UiStrings.Get(notification.Message), icon);
     }
 
     private void ShowStatusBalloon()
@@ -422,7 +466,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _notifyIcon.ShowBalloonTip(
             5_000,
-            $"Remote Commander - {_snapshot.StateLabel}",
+            $"Remote Commander - {UiStrings.Get(_snapshot.StateLabel)}",
             BuildDetailLine(_snapshot),
             ToolTipIcon.None);
     }
@@ -459,7 +503,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _log.Write(LogSource.Tray, $"Command failed ({ex.GetType().Name}, HRESULT={ex.HResult:X8}).");
             OnUiThread(() => MessageBox.Show(
-                $"That did not work:\n{ex.Message}",
+                UiStrings.Format("That did not work:\n{0}", ex.Message),
                 "Remote Commander Tray",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning));
@@ -490,7 +534,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _log.Write(LogSource.Tray, $"Clipboard unavailable: {ex.Message}");
             MessageBox.Show(
-                "Windows would not let the clipboard be written just now. Try again.",
+                UiStrings.Get("Windows would not let the clipboard be written just now. Try again."),
                 "Remote Commander Tray",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Warning);
