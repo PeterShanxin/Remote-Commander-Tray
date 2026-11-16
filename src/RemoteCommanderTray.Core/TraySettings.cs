@@ -106,7 +106,7 @@ public sealed class SettingsStore
     public SettingsStore(string path) => _path = path;
 
     /// <summary>Reads settings, falling back to defaults when the file is absent or unreadable.</summary>
-    public TraySettings Load()
+    public TraySettings Load(bool quarantineInvalid = true)
     {
         lock (_gate)
         {
@@ -123,7 +123,7 @@ public sealed class SettingsStore
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
             {
-                TryQuarantine();
+                if (quarantineInvalid) TryQuarantine();
                 return new TraySettings();
             }
         }

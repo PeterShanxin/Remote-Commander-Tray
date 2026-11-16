@@ -1,0 +1,46 @@
+name: Store package
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+jobs:
+  package:
+    name: MSIX (${{ matrix.arch }})
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check reproducible assets
+        run: |
+          python tools/generate-store-assets.py
+          git diff --exit-code -- packaging/Assets
+      - name: Build and validate package
+        shell: pwsh
+        run: ./tools/build-store.ps1 -Architecture '${{ matrix.arch }}' -PackageVersion 1.0.0.0 -OutputDirectory artifacts/store
+      - name: Save unsigned Store submission package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Store-${{ matrix.arch }}
+          path: |
+            artifacts/store/*.msix
+            artifacts/store/build-info.json
+            artifacts/store/makeappx.log
+          if-no-files-found: error
+      - name: Install and launch x64 package on disposable runner
+        if: matrix.arch == 'x64'
+        shell: pwsh
+        run: ./tools/test-store-install.ps1 -PackagePath artifacts/store/RemoteCommanderTray_1.0.0.0_x64.msix

@@ -51,9 +51,13 @@ public sealed class AgentCommandResolver
     private const char PathListSeparator = ';';
 
     private readonly IAgentEnvironment _environment;
+    private readonly bool _allowPackageDownload;
 
-    public AgentCommandResolver(IAgentEnvironment? environment = null)
-        => _environment = environment ?? new SystemAgentEnvironment();
+    public AgentCommandResolver(IAgentEnvironment? environment = null, bool allowPackageDownload = true)
+    {
+        _environment = environment ?? new SystemAgentEnvironment();
+        _allowPackageDownload = allowPackageDownload;
+    }
 
     public AgentResolution Resolve(AgentCommand command, TraySettings settings)
     {
@@ -88,7 +92,7 @@ public sealed class AgentCommandResolver
         }
 
         var npx = FindOnPath("npx.cmd") ?? FindOnPath("npx.exe");
-        if (npx is not null)
+        if (npx is not null && _allowPackageDownload)
         {
             return new AgentResolution(WrapInCmd($"{Quote(npx)} -y {PackageName}@latest {suffix}"), null);
         }

@@ -14,7 +14,14 @@ internal static class StartupRegistration
     public const string StartupAppsSettingsUri = "ms-settings:startupapps";
     public const string AutostartSwitch = "--autostart";
 
-    public static StartupState GetState() => GetState(RunKeyPath, ApprovedKeyPath, ValueName);
+    public static StartupState GetState()
+    {
+#if STORE_DISTRIBUTION
+        return PackagedStartupRegistration.GetState();
+#else
+        return GetState(RunKeyPath, ApprovedKeyPath, ValueName);
+#endif
+    }
     public static bool IsEnabled() => GetState() == StartupState.Enabled;
     internal static StartupState GetState(string runPath, string approvedPath, string name)
     {
@@ -35,6 +42,16 @@ internal static class StartupRegistration
 
     public static bool TrySet(bool enabled, out string? error)
         => TrySet(enabled, Environment.ProcessPath, RunKeyPath, ValueName, out error);
+    public static async Task<(bool Success, string? Error)> TrySetAsync(bool enabled)
+    {
+#if STORE_DISTRIBUTION
+        return await PackagedStartupRegistration.TrySetAsync(enabled);
+#else
+        await Task.CompletedTask;
+        var success = TrySet(enabled, out var error);
+        return (success, error);
+#endif
+    }
     internal static bool TrySet(bool enabled, string? executable, string runPath, string name, out string? error)
     {
         error = null;
@@ -57,6 +74,12 @@ internal static class StartupRegistration
 
     public static void RefreshIfRegistered()
     {
+#if STORE_DISTRIBUTION
+        // MSIX owns startup registration and the versioned installation path.
+        // Never create or migrate a Run value from a Store installation.
+        PackagedStartupRegistration.Initialize();
+#else
         if (GetState() is StartupState.Enabled or StartupState.DisabledByWindows) TrySet(true, out _);
+#endif
     }
 }

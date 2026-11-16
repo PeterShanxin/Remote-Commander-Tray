@@ -1,5 +1,8 @@
 # Remote Commander Tray
 
+The Microsoft Store MSIX edition is being prepared; it is not yet published.
+See [Store packaging and migration](docs/STORE.md) and the [privacy policy](docs/PRIVACY.md).
+
 A very small Windows system-tray companion that runs and supervises the official
 [Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) Remote Device.
 

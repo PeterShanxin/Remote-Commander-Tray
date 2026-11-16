@@ -6,7 +6,11 @@ using RemoteCommanderTray.Windows;
 
 namespace RemoteCommanderTray;
 
+#if STORE_DISTRIBUTION
+[SupportedOSPlatform("windows10.0.19041")]
+#else
 [SupportedOSPlatform("windows")]
+#endif
 internal static class Program
 {
     /// <summary>
@@ -49,11 +53,23 @@ internal static class Program
             // Creating the data directory can fail on its own - a redirected, full or
             // locked %LOCALAPPDATA%. Doing it outside the handler below turned that into
             // an unhandled exception and a launch that simply never appeared.
+#if STORE_DISTRIBUTION
+            paths = new AppPaths(global::Windows.Storage.ApplicationData.Current.LocalFolder.Path);
+#else
             paths = new AppPaths();
+#endif
             paths.EnsureCreated();
 
             var settingsStore = new SettingsStore(paths.SettingsFile);
+#if STORE_DISTRIBUTION
+            // Import preferences once. Credentials remain owned by the official CLI;
+            // logs are deliberately not imported into the Store package.
+            settings = File.Exists(paths.SettingsFile)
+                ? settingsStore.Load()
+                : new SettingsStore(new AppPaths().SettingsFile).Load(quarantineInvalid: false);
+#else
             settings = settingsStore.Load();
+#endif
 
             // Writing the file back on first run gives users something to edit.
             if (!File.Exists(paths.SettingsFile))
@@ -85,6 +101,7 @@ internal static class Program
         // Keeps a registered startup entry pointing at wherever the app lives now,
         // without disturbing a disable the user applied in Windows.
         StartupRegistration.RefreshIfRegistered();
+        log.Write(LogSource.Tray, $"Startup registration: {StartupRegistration.GetState()}.");
 
         Application.ThreadException += (_, e) =>
             log.Write(LogSource.Tray, $"Unhandled UI exception: {e.Exception}");

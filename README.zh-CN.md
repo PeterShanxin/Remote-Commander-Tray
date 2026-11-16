@@ -1,5 +1,8 @@
 # Remote Commander Tray
 
+Microsoft Store 的 MSIX 版本正在准备中，尚未发布。参见
+[商店打包与迁移说明](docs/STORE.md)和[隐私政策](docs/PRIVACY.md)。
+
 一个极轻量的 Windows 系统托盘小工具，负责运行和管理官方
 [Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) Remote Device。
 

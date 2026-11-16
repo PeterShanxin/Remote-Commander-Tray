@@ -43,6 +43,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private AgentSnapshot _snapshot = AgentSnapshot.Initial;
     private bool _busy;
     private bool _exiting;
+    private bool _startupBusy;
     private Task? _supervisorDisposeTask;
     private bool _supervisorDisposeFailureReported;
 
@@ -74,7 +75,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _supervisor = new AgentSupervisor(
             machine,
             _processFactory,
+#if STORE_DISTRIBUTION
+            new AgentCommandResolver(allowPackageDownload: false),
+#else
             new AgentCommandResolver(),
+#endif
             _settings,
             _log,
             verboseLog: _verboseLog);
@@ -188,6 +193,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         var state = StartupRegistration.GetState();
         _launchAtSignInItem.Checked = state == StartupState.Enabled;
+        _launchAtSignInItem.Enabled = !_startupBusy;
         _launchAtSignInItem.Text = state switch
         {
             StartupState.DisabledByWindows => "Launch at sign-in (turned off in Windows)",
@@ -310,8 +316,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         CopyToClipboard(report, "Diagnostics copied to the clipboard.");
     }
 
-    private void ToggleLaunchAtSignIn()
+    private async void ToggleLaunchAtSignIn()
     {
+        if (_startupBusy || _exiting) return;
         var state = StartupRegistration.GetState();
         if (state is StartupState.DisabledByWindows or StartupState.Unknown)
         {
@@ -332,7 +339,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         var target = state == StartupState.NotRegistered;
-        if (StartupRegistration.TrySet(target, out var error))
+        _startupBusy = true;
+        RefreshStartupItem();
+        (bool Success, string? Error) result;
+        try { result = await StartupRegistration.TrySetAsync(target); }
+        finally { _startupBusy = false; }
+        if (_exiting) return;
+        RefreshStartupItem();
+        if (result.Success)
         {
             RefreshStartupItem();
             if (target && StartupRegistration.GetState() is StartupState.DisabledByWindows or StartupState.Unknown)
@@ -341,9 +355,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        _log.Write(LogSource.Tray, $"Could not change launch at sign-in: {error}");
+        _log.Write(LogSource.Tray, $"Could not change launch at sign-in: {result.Error}");
         MessageBox.Show(
-            $"Could not change the startup setting:\n{error}",
+            $"Could not change the startup setting:\n{result.Error}",
             "Remote Commander Tray",
             MessageBoxButtons.OK,
             MessageBoxIcon.Warning);

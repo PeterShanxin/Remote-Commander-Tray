@@ -101,6 +101,36 @@ public class AgentCommandResolverTests
     }
 
     [Fact]
+    public void Store_mode_requires_an_installed_agent_instead_of_downloading_with_npx()
+    {
+        var env = new FakeEnvironment
+        {
+            Variables = { ["PATH"] = @"C:\Program Files\nodejs" },
+            Files = { @"C:\Program Files\nodejs\npx.cmd" },
+        };
+        var resolution = new AgentCommandResolver(env, allowPackageDownload: false)
+            .Resolve(AgentCommand.Remote, new TraySettings());
+        Assert.False(resolution.Found);
+        Assert.Null(resolution.Spec);
+        Assert.Contains("npm install -g", resolution.Problem);
+    }
+
+    [Fact]
+    public void Store_mode_still_uses_the_installed_official_agent()
+    {
+        var env = new FakeEnvironment
+        {
+            Variables = { ["PATH"] = @"C:\Program Files\nodejs", ["APPDATA"] = @"C:\Users\peter\AppData\Roaming" },
+            Files = { NodeExe, PackageEntry },
+        };
+        var resolution = new AgentCommandResolver(env, allowPackageDownload: false)
+            .Resolve(AgentCommand.Remote, new TraySettings());
+        Assert.True(resolution.Found);
+        Assert.Equal(NodeExe, resolution.Spec!.FileName);
+        Assert.Equal($"\"{PackageEntry}\" remote", resolution.Spec.Arguments);
+    }
+
+    [Fact]
     public void Explains_itself_when_nothing_is_found()
     {
         var resolution = new AgentCommandResolver(new FakeEnvironment())

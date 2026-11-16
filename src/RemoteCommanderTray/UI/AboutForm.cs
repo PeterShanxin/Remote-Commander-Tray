@@ -26,6 +26,8 @@ internal sealed class AboutForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         AutoScaleMode = AutoScaleMode.Dpi;
         ClientSize = new Size(430, 260);
+        AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
         Padding = new Padding(16);
 
         var layout = new TableLayoutPanel
@@ -33,6 +35,7 @@ internal sealed class AboutForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 1,
             AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
         };
 
         layout.Controls.Add(new Label
