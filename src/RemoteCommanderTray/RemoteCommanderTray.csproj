@@ -15,6 +15,12 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <PropertyGroup Condition="'$(StoreDistribution)' == 'true'">
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
+    <DefineConstants>$(DefineConstants);STORE_DISTRIBUTION</DefineConstants>
+  </PropertyGroup>
+
   <!--
     Publish settings live here rather than in the build properties so that a plain
     `dotnet build` works on any host (including the Linux CI leg that only compiles),
