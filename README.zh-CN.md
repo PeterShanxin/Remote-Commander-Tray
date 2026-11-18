@@ -1,10 +1,8 @@
 # Remote Commander Tray
 
-Microsoft Store 的 MSIX 版本正在准备中，尚未发布。参见
-[商店打包与迁移说明](docs/STORE.md)和[隐私政策](docs/PRIVACY.md)。
+在 Windows 系统托盘查看 [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) 的连接状态，重启或停止远程客户端。
 
-一个极轻量的 Windows 系统托盘小工具，负责运行和管理官方
-[Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) Remote Device。
+**[从 Microsoft Store 安装](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [下载便携版](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [版本迁移指南](docs/STORE.md) · [隐私政策](docs/PRIVACY.md)
 
 它不重新实现 Desktop Commander，也不读取其凭据文件。官方 CLI 的原始输出可能含敏感数据，
 普通日志和诊断报告刻意不保留这些内容。它只负责两件事：
@@ -26,7 +24,7 @@ Windows 侧的使用体验，以及一个 `desktop-commander remote` 进程的�
 
 | 项目 | 要求 |
 | --- | --- |
-| 系统 | Windows 10 1809 及以上，x64 或 ARM64 |
+| 系统 | 商店版需 Windows 10 2004 或以上，便携版需 1809 或以上。支持 x64 和 ARM64 |
 | 运行时 | 无需安装 - 发布的 `.exe` 是 self-contained |
 | Agent | Node.js + `@wonderwhy-er/desktop-commander` |
 | 权限 | 普通用户即可，不需要管理员，不使用 Scheduled Task |
@@ -37,9 +35,9 @@ Windows 侧的使用体验，以及一个 `desktop-commander remote` 进程的�
 npm install -g @wonderwhy-er/desktop-commander
 ```
 
-如果没有全局安装，托盘会回退到 `npx`，首次运行时自动下载。
+商店版需要 Node.js 22.12 或以上版本、已安装的官方 CLI 和 Desktop Commander Remote 账户。仅便携版在找不到 CLI 时会回退到 `npx`，首次运行时自动下载。
 
-## 安装
+## 安装便携版
 
 1. 从 [releases 页面](https://github.com/PeterShanxin/Remote-Commander-Tray/releases)
    下载 `RemoteCommanderTray-win-x64.exe` 或 `RemoteCommanderTray-win-arm64.exe`。
