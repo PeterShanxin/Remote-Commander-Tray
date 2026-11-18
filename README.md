@@ -1,10 +1,8 @@
 # Remote Commander Tray
 
-The Microsoft Store MSIX edition is being prepared; it is not yet published.
-See [Store packaging and migration](docs/STORE.md) and the [privacy policy](docs/PRIVACY.md).
+Monitor, restart, or stop your [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) connection from the Windows system tray.
 
-A very small Windows system-tray companion that runs and supervises the official
-[Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) Remote Device.
+**[Install from Microsoft Store](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Download portable edition](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Migration guide](docs/STORE.md) · [Privacy policy](docs/PRIVACY.md)
 
 It does not reimplement Desktop Commander or read its credential store. Raw CLI
 output is sensitive; ordinary logs and copied diagnostics deliberately omit it.
@@ -28,7 +26,7 @@ It owns exactly two things: the Windows user experience, and the lifecycle of on
 
 | Item | Requirement |
 | --- | --- |
-| OS | Windows 10 1809 or later, x64 or ARM64 |
+| OS | Windows 10 2004 or later for Store, 1809 or later for portable. Both support x64 and ARM64. |
 | Runtime | None - the published `.exe` is self-contained |
 | Agent | Node.js plus `@wonderwhy-er/desktop-commander` (see below) |
 | Privileges | Ordinary user; no admin rights, no scheduled task |
@@ -39,10 +37,9 @@ Install the agent once:
 npm install -g @wonderwhy-er/desktop-commander
 ```
 
-If it is not installed globally, the tray falls back to `npx`, which downloads the
-package on first run.
+The Store edition requires Node.js 22.12 or later, the installed CLI, and a Desktop Commander Remote account. Only the portable edition can download a missing CLI through `npx`.
 
-## Install
+## Install the portable edition
 
 1. Download `RemoteCommanderTray-win-x64.exe` or `RemoteCommanderTray-win-arm64.exe`
    from the [releases page](https://github.com/PeterShanxin/Remote-Commander-Tray/releases).

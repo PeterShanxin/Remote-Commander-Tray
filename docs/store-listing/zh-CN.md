@@ -1,12 +1,11 @@
 # Remote Commander Tray
 
+在 Windows 系统托盘查看 Desktop Commander Remote 的连接状态。客户端异常退出时，Remote Commander Tray 会尝试重新启动它。你也可以从托盘菜单手动重启或停止连接。
+
 需要另行安装 Node.js 22.12 或更新版本、官方 Desktop Commander CLI，并拥有 Desktop
 Commander Remote 账户。本应用是独立开发的辅助工具，并非 Desktop Commander 官方产品。
 应用界面为英文。
 支持 Windows 10 2004 或更新版本，以及 Windows 11。
-
-在 Windows 通知区域查看并管理 Desktop Commander 远程连接。Remote Commander Tray
-负责启动和守护官方远程客户端，显示客户端报告的连接状态，并提供重启、停止、登录和诊断入口。
 
 - 查看在线、连接中、需要登录、离线和已停止等状态。
 - 从托盘菜单重启或停止受管理的远程连接。
@@ -22,5 +21,5 @@ Commander Remote 账户。本应用是独立开发的辅助工具，并非 Deskt
 网站及支持：https://github.com/PeterShanxin/Remote-Commander-Tray
 隐私政策：https://github.com/PeterShanxin/Remote-Commander-Tray/blob/main/docs/PRIVACY.md
 
-简短描述：在系统托盘中守护和管理官方 Desktop Commander 远程客户端。
-关键词：远程连接；开发工具；系统托盘；MCP；连接状态
+简短描述：在 Windows 系统托盘查看 Desktop Commander Remote 连接状态，一键重启或停止远程客户端。
+关键词：远程客户端监控；MCP 连接状态；系统托盘；登录自启；断线诊断
