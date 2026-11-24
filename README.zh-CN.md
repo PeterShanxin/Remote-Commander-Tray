@@ -2,13 +2,12 @@
 
 <img src="packaging/Assets/ListingLogo.png" alt="Remote Commander Tray 应用图标" width="80" height="80">
 
-让 [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) 在后台运行，不用一直开着终端窗口。你可以直接在 Windows 系统托盘查看连接状态、重启或停止远程客户端。
+让 [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) 在后台运行，不用一直开着终端窗口。Windows 可在系统托盘查看连接状态和控制客户端；Linux Beta 则提供独立的服务控制窗口。
 
-**[从 Microsoft Store 安装](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [下载便携版](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [版本迁移指南](docs/STORE.md) · [隐私政策](docs/PRIVACY.md)
+**[Windows：从 Microsoft Store 安装](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Windows 便携版](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Linux Beta](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/download/v0.3.0/RemoteCommanderTray-linux-beta.tar.gz) · [Windows 迁移指南](docs/STORE.md) · [隐私政策](docs/PRIVACY.md)
 
-它不重新实现 Desktop Commander，也不读取其凭据文件。官方 CLI 的原始输出可能含敏感数据，
-普通日志和诊断报告刻意不保留这些内容。它只负责两件事：
-Windows 侧的使用体验，以及一个 `desktop-commander remote` 进程的生命周期。
+它不重新实现 Desktop Commander，也不读取其凭据文件。它只管理一个 `desktop-commander remote` 进程。
+Windows 的普通日志和诊断报告不保留 CLI 原始输出；Linux 不保存客户端输出。
 
 [English](README.md)
 
@@ -18,7 +17,13 @@ https://github.com/user-attachments/assets/a829301f-5549-4a1a-a61a-19d91324b6d6
 
 [下载原版中文短片](https://github.com/PeterShanxin/product-films/releases/download/rct-launch-v1.1.0/remote-commander-tray-launch-zh-v5.mp4)。
 
-## 功能
+## Linux Beta
+
+[下载 v0.3.0 Linux 安装包](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/download/v0.3.0/RemoteCommanderTray-linux-beta.tar.gz)。已在 Ubuntu 24.04 x64 的 systemd 用户会话测试，桌面窗口使用 Tk。它没有系统托盘图标，只显示服务是否运行，不显示远程连接是否在线。
+
+先装好 Node.js 22.12 或更新版本和官方 CLI，在 CLI 配对后停止终端进程。解压后用普通用户运行 `./remote-commander-tray install`，再从应用菜单打开 **Remote Commander Tray (Linux Beta)**，点 **Start**。无桌面用法、卸载和完整环境要求见 [Linux Beta 指南](docs/LINUX_BETA.md)。自动化测试使用模拟客户端，未覆盖真实账号配对。
+
+## Windows 功能
 
 - 登录 Windows 后自动启动 Remote Device，不弹出 console 窗口。
 - 托盘图标显示 CLI 最近报告的连接状态。
@@ -28,7 +33,7 @@ https://github.com/user-attachments/assets/a829301f-5549-4a1a-a61a-19d91324b6d6
 - 登录失效时明确提醒，一次点击即可重新认证。
 - 同时管理一个 agent 进程组，替换前先回收整组进程。已有的计划任务或手动 CLI 必须先停用。
 
-## 环境要求
+## Windows 环境要求
 
 | 项目 | 要求 |
 | --- | --- |
@@ -45,7 +50,7 @@ npm install -g @wonderwhy-er/desktop-commander
 
 商店版需要 Node.js 22.12 或以上版本、已安装的官方 CLI 和 Desktop Commander Remote 账户。仅便携版在找不到 CLI 时会回退到 `npx`，首次运行时自动下载。
 
-## 安装便携版
+## 安装 Windows 便携版
 
 1. 从 [releases 页面](https://github.com/PeterShanxin/Remote-Commander-Tray/releases)
    下载 `RemoteCommanderTray-win-x64.exe` 或 `RemoteCommanderTray-win-arm64.exe`。
@@ -65,7 +70,7 @@ npm install -g @wonderwhy-er/desktop-commander
 页面里关掉了它。请在 Windows 中重新启用，点击该菜单项会提示打开该页面。
 无法读取或识别系统的启动许可记录时会显示未知，不会误报已启用。
 
-## 托盘状态
+## Windows 托盘状态
 
 图标不只靠颜色区分，每个状态有各自的图形：
 
@@ -187,12 +192,16 @@ dotnet publish src/RemoteCommanderTray/RemoteCommanderTray.csproj -c Release -r 
 每次 publish 产出单个 self-contained 的 `RemoteCommanderTray.exe`（约 60 MB）。
 不开启 trimming：WinForms 不是 trim-safe 的。
 
-完整测试在 Windows x64/ARM64 的 .NET 8 CI 上执行；Linux/macOS 可单独运行核心测试项目。
+Windows x64 和 ARM64 跑 Windows CI。Ubuntu CI 单独跑 .NET Core 测试，也验证 Linux Beta 的安装包和服务。Linux/macOS 可以运行核心测试：
+
+```sh
+dotnet test tests/RemoteCommanderTray.Core.Tests/RemoteCommanderTray.Core.Tests.csproj -c Release
+```
 自动化覆盖、真实环境测试范围和仍需人工验收的项目见 [验证说明](docs/verification.md)。
 
-## 界面语言
+## Windows 界面语言
 
-本工具支持英文与简体中文。右键托盘图标，选择 **语言 / Language**，即可选用**跟随系统**、**English** 或 **简体中文**。配置会保存到 settings.json 的 language 字段（`auto`、`en`、zh-CN）；切换语言即时生效，无须重启远程 Agent。
+Windows 托盘支持英文与简体中文。右键托盘图标，选择 **语言 / Language**，即可选用**跟随系统**、**English** 或 **简体中文**。配置会保存到 settings.json 的 language 字段（`auto`、`en`、zh-CN）；切换语言即时生效，无须重启远程 Agent。
 
 ## 参与贡献
 
@@ -201,7 +210,7 @@ dotnet publish src/RemoteCommanderTray/RemoteCommanderTray.csproj -c Release -r 
 ## 不包含的功能
 
 完整 Desktop Commander GUI、文件管理、terminal、MCP configuration editor、聊天 UI、
-account management、auto-updater、多设备 dashboard。暂不支持 macOS 和 Linux。
+account management、auto-updater、多设备 dashboard。暂无 macOS 应用。
 
 ## 许可
 

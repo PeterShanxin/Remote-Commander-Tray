@@ -1,11 +1,18 @@
 # Design notes
 
-## Boundaries
+## Platform boundaries
 
-C# / WinForms remains a thin tray and process supervisor. Core owns parsing and state;
-Windows owns process groups, registry access and UI. No new production dependencies.
-The official Desktop Commander CLI owns OAuth, device identity and remote commands.
-The tray does not read device.json. Raw CLI output may contain private tool data.
+The official CLI owns OAuth, device identity and remote commands on both platforms.
+The Windows tray uses C# and WinForms. Core owns its parsing and state; Windows owns
+its process groups, registry access and UI.
+
+Linux Beta is a separate Python control window and command line, not a WinForms port.
+Both control the same per-user systemd service. The service owns startup, bounded retry
+and cgroup cleanup. It does not parse CLI output or claim that a running service is
+connected. It does not keep agent output. See the [Linux Beta guide](LINUX_BETA.md).
+
+## Windows implementation
+The Windows tray does not read device.json. Raw CLI output may contain private tool data.
 
 ## Generation lifecycle
 

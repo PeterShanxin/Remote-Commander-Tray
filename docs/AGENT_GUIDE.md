@@ -1,6 +1,8 @@
 # Agent Guide
 
-Remote Commander Tray is a Windows tray and process supervisor for the official Desktop Commander Remote Device. The Windows app uses C# 12, .NET 8 and WinForms. Maintain the Windows x64 and ARM64 paths. [Linux Beta](LINUX_BETA.md) is a separate desktop window and systemd user service.
+Remote Commander Tray manages the official Desktop Commander Remote Device.
+The Windows tray uses C# 12, .NET 8 and WinForms on x64 and ARM64.
+[Linux Beta](LINUX_BETA.md) uses a desktop control window and a systemd user service.
 
 ## Source of truth
 
@@ -12,14 +14,14 @@ Use the nearest applicable repository instructions for workflow. For implementat
 | [Linux Beta](../linux) | Per-user service, desktop controls and installation |
 | [Windows](../src/RemoteCommanderTray/Windows) | Native process containment and startup registration |
 | [UI](../src/RemoteCommanderTray/UI) | Tray menu, status, notifications and dialogs |
-| [Tests](../tests) | Core, Windows controls and native process verification with synthetic agents |
+| [Tests](../tests) | Portable Core, Windows and Linux controls and process verification with synthetic agents |
 | [Packaging](../packaging) and [tools](../tools) | MSIX manifest, packaging, verification and generated assets |
 
 ## Work and verify
 
 1. Check the branch and working tree. Use a fresh clone or a separate worktree for concurrent changes. Preserve edits that did not come from your task.
 2. Define the user-visible behavior and the layer that owns it. For a bug fix, first identify a case that fails without the fix.
-3. Use the relevant commands in [Verification](verification.md). Distinguish Windows x64 and ARM64 CI from manual acceptance. Core tests and compilation do not verify real OAuth, startup or the installed Store package.
+3. Use the relevant commands in [Verification](verification.md). Distinguish Windows x64 and ARM64 CI, Ubuntu Linux Beta lifecycle checks and manual acceptance. Core tests and compilation do not verify real OAuth, startup or the installed Store package.
 4. Write a focused change. Follow the [writing guide](WRITING_GUIDE.md) and describe the checks you ran and the checks you could not run.
 5. Leave the installed tray, accounts and live processes alone unless the owner has authorized an isolated live test. Use synthetic agents and disposable settings instead.
 

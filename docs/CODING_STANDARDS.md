@@ -4,7 +4,7 @@ Use the conventions in [.editorconfig](../.editorconfig) and [Directory.Build.pr
 
 ## Architecture and contracts
 
-- Keep parsing, lifecycle and state in Core; keep Windows process, registry and startup APIs in the Windows layer. The UI renders state and issues commands rather than owning the supervisor lifecycle.
+- For Windows, keep parsing, lifecycle and state in Core; keep Windows process, registry and startup APIs in the Windows layer. The UI renders state and issues commands rather than owning the supervisor lifecycle. Linux Beta delegates process ownership and restart to the per-user systemd service; its desktop and command-line controls use that same service.
 - Keep one owner for a process generation, timer or state transition. Preserve cancellation and ownership across asynchronous callbacks. Explain why when a lock, retry or timeout is necessary.
 - Normalize and validate persisted settings at the boundary. Missing or older values must still load as intended. Do not change user settings, process ownership, startup registration or package identity as incidental cleanup.
 - Keep the official Desktop Commander CLI responsible for authentication, device identity and the Remote MCP connection. Do not parse its credential store or include arbitrary CLI output, tool arguments, results, authorization codes, or URLs in ordinary logs or copyable diagnostics. Use the existing [design notes](design-notes.md) for the trust and logging boundaries.

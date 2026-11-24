@@ -2,14 +2,12 @@
 
 <img src="packaging/Assets/ListingLogo.png" alt="Remote Commander Tray app icon" width="80" height="80">
 
-Keep [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) running without leaving a terminal window open. Remote Commander Tray runs the official agent in the background and gives you connection status and controls in the Windows system tray.
+Keep [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) running without leaving a terminal window open. Remote Commander Tray runs the official agent in the background on Windows and Linux. Windows shows connection status in the system tray; Linux Beta puts service controls in a desktop window.
 
-**[Install from Microsoft Store](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Download portable edition](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Migration guide](docs/STORE.md) · [Privacy policy](docs/PRIVACY.md)
+**[Windows: Install from Microsoft Store](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Windows portable](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Linux Beta](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/download/v0.3.0/RemoteCommanderTray-linux-beta.tar.gz) · [Windows migration guide](docs/STORE.md) · [Privacy policy](docs/PRIVACY.md)
 
-It does not reimplement Desktop Commander or read its credential store. Raw CLI
-output is sensitive; ordinary logs and copied diagnostics deliberately omit it.
-It owns exactly two things: the Windows user experience, and the lifecycle of one
-`desktop-commander remote` process.
+It does not reimplement Desktop Commander or read its credential store. It manages one `desktop-commander remote` process. Windows omits raw CLI output
+from ordinary logs and copied diagnostics; Linux does not retain agent output.
 
 [中文说明](README.zh-CN.md)
 
@@ -19,7 +17,13 @@ https://github.com/user-attachments/assets/29d50e07-b58c-49ce-9773-f3f5914098f7
 
 [Download the original English film](https://github.com/PeterShanxin/product-films/releases/download/rct-launch-v1.1.0/remote-commander-tray-launch-en-v5.mp4).
 
-## What it does
+## Linux Beta
+
+[Download the v0.3.0 Linux archive](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/download/v0.3.0/RemoteCommanderTray-linux-beta.tar.gz). The beta was tested on Ubuntu 24.04 x64 with a systemd user session and a Tk desktop window. It is not a tray icon, and it shows whether the service is running, not whether the device is connected.
+
+Install Node.js 22.12+ and the official CLI, pair in the official CLI, and stop that terminal agent. Extract the archive and run `./remote-commander-tray install` as your usual user. Open **Remote Commander Tray (Linux Beta)** from the application menu and select **Start**. For headless use, uninstall, and prerequisites, see the [Linux Beta guide](docs/LINUX_BETA.md). Automated tests use a synthetic agent; real pairing was not tested.
+
+## Windows features
 
 - Starts the Remote Device when you sign in to Windows, with no console window.
 - Shows the latest CLI-reported connection status in the notification area, at a glance.
@@ -30,7 +34,7 @@ https://github.com/user-attachments/assets/29d50e07-b58c-49ce-9773-f3f5914098f7
 - Owns one agent generation at a time and drains its process group before replacement.
   Existing scheduled tasks or manually started devices must be stopped separately.
 
-## Requirements
+## Windows requirements
 
 | Item | Requirement |
 | --- | --- |
@@ -47,7 +51,7 @@ npm install -g @wonderwhy-er/desktop-commander
 
 The Store edition requires Node.js 22.12 or later, the installed CLI, and a Desktop Commander Remote account. Only the portable edition can download a missing CLI through `npx`.
 
-## Install the portable edition
+## Install the Windows portable edition
 
 1. Download `RemoteCommanderTray-win-x64.exe` or `RemoteCommanderTray-win-arm64.exe`
    from the [releases page](https://github.com/PeterShanxin/Remote-Commander-Tray/releases).
@@ -69,7 +73,7 @@ If **Launch at sign-in** shows "(turned off in Windows)", Windows has disabled t
 from its own Startup Apps page. Use that Windows page to re-enable it; clicking the item offers to open the page.
 An unreadable or unfamiliar approval record is shown as unknown, never falsely enabled.
 
-## Tray states
+## Windows tray states
 
 Each state has its own shape as well as its own colour, so it stays readable without
 relying on colour alone.
@@ -232,10 +236,10 @@ Each publish produces a single self-contained `RemoteCommanderTray.exe` (~60 MB)
 Trimming stays off: WinForms is not trim-safe.
 
 The full solution tests require Windows and run on native x64 and ARM64 CI with .NET 8.
-The portable core remains testable on Linux/macOS:
+Ubuntu CI also tests the portable .NET Core and separately exercises the Linux Beta package. The Core suite can run on Linux/macOS:
 
 ```sh
-dotnet test tests/RemoteCommanderTray.Core.Tests/RemoteCommanderTray.Core.Tests.csproj
+dotnet test tests/RemoteCommanderTray.Core.Tests/RemoteCommanderTray.Core.Tests.csproj -c Release
 ```
 
 See [verification coverage](docs/verification.md) for automated cases, safeguards, and
@@ -247,6 +251,7 @@ manual release acceptance that is not implied by a green build.
 | --- | --- | --- |
 | `src/RemoteCommanderTray.Core` | `net8.0` | Log parsing, state machine, supervisor, settings, logging, diagnostics |
 | `src/RemoteCommanderTray` | `net8.0-windows` | WinForms tray UI, real process launching, job object, registry startup |
+| [`linux/`](linux) | Linux Beta | Desktop control window and per-user systemd service |
 | `tests/RemoteCommanderTray.Core.Tests` | `net8.0` | Deterministic lifecycle, parsing, privacy and settings tests |
 | `tests/RemoteCommanderTray.Windows.Tests` | `net8.0-windows` | Actual Job Objects, registry adapters and STA tray controls |
 | `tests/RemoteCommanderTray.ProcessProbe` | `net8.0` | Test-only synthetic children, no network or credentials |
@@ -254,13 +259,12 @@ manual release acceptance that is not implied by a green build.
 The split is the point: status parsing and state rules are portable and unit-tested,
 and the Windows-only code stays thin.
 
-`src/RemoteCommanderTray/app.ico` is the repository's only binary file, and it is
-generated by `tools/generate-icon.py`; CI fails if the committed icon stops matching the
+`src/RemoteCommanderTray/app.ico` is generated by `tools/generate-icon.py`; CI fails if the committed icon stops matching the
 script. Tray status icons are drawn at runtime instead, so they follow the current DPI.
 
-## Language
+## Windows interface language
 
-The tray supports English and Simplified Chinese. Right-click the tray icon and select **Language / 语言** to follow Windows, use English, or use **简体中文**. The choice is saved in settings.json under language (`auto`, `en`, or zh-CN). The language changes immediately without restarting the agent.
+The Windows tray supports English and Simplified Chinese. Right-click the tray icon and select **Language / 语言** to follow Windows, use English, or use **简体中文**. The choice is saved in settings.json under language (`auto`, `en`, or zh-CN). The language changes immediately without restarting the agent.
 
 ## Contributing
 
@@ -269,8 +273,7 @@ See [Contributing](CONTRIBUTING.md), [Coding standards](docs/CODING_STANDARDS.md
 ## Out of scope
 
 No Desktop Commander GUI, file manager, terminal, MCP configuration editor, chat UI,
-account management, auto-updater or multi-device dashboard. macOS and Linux are not
-supported yet.
+account management, auto-updater or multi-device dashboard. There is no macOS app.
 
 ## License
 
