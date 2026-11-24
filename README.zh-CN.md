@@ -2,7 +2,7 @@
 
 在 Windows 系统托盘查看 [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) 的连接状态，重启或停止远程客户端。
 
-**[从 Microsoft Store 安装](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [下载便携版](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [版本迁移指南](docs/STORE.md) · [隐私政策](docs/PRIVACY.md)
+**[从 Microsoft Store 安装](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [下载便携版](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [版本迁移指南](docs/STORE.md) · [隐私政策](docs/PRIVACY.md) · [观看 35 秒发布短片](https://github.com/PeterShanxin/product-films/releases/tag/rct-launch-v1.0.0)
 
 它不重新实现 Desktop Commander，也不读取其凭据文件。官方 CLI 的原始输出可能含敏感数据，
 普通日志和诊断报告刻意不保留这些内容。它只负责两件事：
