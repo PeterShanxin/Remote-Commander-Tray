@@ -2,7 +2,7 @@
 
 <img src="packaging/Assets/ListingLogo.png" alt="Remote Commander Tray app icon" width="80" height="80">
 
-Monitor, restart, or stop your [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) connection from the Windows system tray.
+Keep [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) running without leaving a terminal window open. Remote Commander Tray runs the official agent in the background and gives you connection status and controls in the Windows system tray.
 
 **[Install from Microsoft Store](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Download portable edition](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Migration guide](docs/STORE.md) · [Privacy policy](docs/PRIVACY.md) · [Watch the 35-second launch film](https://github.com/PeterShanxin/product-films/releases/tag/rct-launch-v1.1.0)
 
