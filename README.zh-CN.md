@@ -1,5 +1,7 @@
 # Remote Commander Tray
 
+<img src="packaging/Assets/ListingLogo.png" alt="Remote Commander Tray 应用图标" width="80" height="80">
+
 在 Windows 系统托盘查看 [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) 的连接状态，重启或停止远程客户端。
 
 **[从 Microsoft Store 安装](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [下载便携版](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [版本迁移指南](docs/STORE.md) · [隐私政策](docs/PRIVACY.md) · [观看 35 秒中文发布短片](https://github.com/PeterShanxin/product-films/releases/download/rct-launch-v1.1.0/remote-commander-tray-launch-zh-v5.mp4)
@@ -45,7 +47,7 @@ npm install -g @wonderwhy-er/desktop-commander
 3. 运行后出现在通知区域，并自动启动 agent。
 4. 右键菜单勾选 **Launch at sign-in**。
 
-v0.1 没有安装包，也没有自动更新。升级时直接替换 `.exe`。
+便携版没有安装程序，也不会自动更新。升级时直接替换 `.exe`。
 
 ### 如果你已经用别的方式在跑 Remote Device
 
@@ -190,7 +192,7 @@ dotnet publish src/RemoteCommanderTray/RemoteCommanderTray.csproj -c Release -r 
 
 请参阅[贡献指南](CONTRIBUTING.md)、[编码规范](docs/CODING_STANDARDS.md)和[写作指南](docs/WRITING_GUIDE.md)。
 
-## v0.1 不做
+## 不包含的功能
 
 完整 Desktop Commander GUI、文件管理、terminal、MCP configuration editor、聊天 UI、
 account management、auto-updater、多设备 dashboard。暂不支持 macOS 和 Linux。
