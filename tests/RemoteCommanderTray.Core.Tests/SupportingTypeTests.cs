@@ -234,4 +234,17 @@ public class RollingFileLogTests : IDisposable
 
         GC.SuppressFinalize(this);
     }
+    [Theory]
+    [InlineData("{}", "auto")]
+    [InlineData("{\"language\":null}", "auto")]
+    [InlineData("{\"language\":\"not-a-language\"}", "auto")]
+    [InlineData("{\"language\":\"en\"}", "en")]
+    [InlineData("{\"language\":\"zh-CN\"}", "zh-CN")]
+    public void Settings_language_defaults_and_explicit_choices_are_compatible(string json, string expected)
+    {
+        var settings = System.Text.Json.JsonSerializer.Deserialize<TraySettings>(json);
+        Assert.NotNull(settings);
+        Assert.Equal(expected, settings.Normalized().Language);
+    }
+
 }

@@ -22,6 +22,18 @@ public enum NotificationKind
     SessionExpired,
 }
 
+/// <summary>Stable identifiers for authored notification wording, independent of severity.</summary>
+public enum NotificationMessageId
+{
+    Unspecified,
+    ReauthenticationStarted,
+    CleanupFailed,
+    ConnectionStalled,
+    SignInRequired,
+    RepeatedFailure,
+    AgentUnavailable,
+}
+
 /// <summary>
 /// A desktop notification the tray should raise.
 /// </summary>
@@ -37,4 +49,8 @@ public sealed record TrayNotification(
     NotificationKind Kind,
     string Title,
     string Message,
-    string? ActionUri = null);
+    string? ActionUri = null)
+{
+    public NotificationMessageId MessageId { get; init; }
+    public int? FailureCount { get; init; }
+}

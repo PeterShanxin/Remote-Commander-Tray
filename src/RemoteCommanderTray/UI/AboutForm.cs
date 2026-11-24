@@ -15,9 +15,9 @@ internal sealed class AboutForm : Form
     private const string ProjectUrl = "https://github.com/PeterShanxin/Remote-Commander-Tray";
     private const string UpstreamUrl = "https://github.com/wonderwhy-er/DesktopCommanderMCP";
 
-    public AboutForm(string version, Icon icon, string dataFolder)
+    public AboutForm(string version, Icon icon, string dataFolder, UiStrings strings)
     {
-        Text = UiStrings.Get("About Remote Commander Tray");
+        Text = strings.Get(TextId.AboutTitle);
         Icon = icon;
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
@@ -40,7 +40,7 @@ internal sealed class AboutForm : Form
 
         layout.Controls.Add(new Label
         {
-            Text = "Remote Commander Tray",
+            Text = strings.Get(TextId.ApplicationName),
             Font = new Font(Font.FontFamily, 12f, FontStyle.Bold),
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 4),
@@ -48,25 +48,25 @@ internal sealed class AboutForm : Form
 
         layout.Controls.Add(new Label
         {
-            Text = UiStrings.Format("Version {0}   -   MIT licensed", version),
+            Text = strings.Format(TextId.Version, version),
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 12),
         });
 
         layout.Controls.Add(new Label
         {
-            Text = UiStrings.Get("A tray companion that runs and supervises the official Desktop Commander Remote Device. It never handles sign-in tokens: authentication, device identity and the Remote MCP connection all stay with the official CLI."),
+            Text = strings.Get(TextId.AboutDescription),
             AutoSize = true,
             MaximumSize = new Size(390, 0),
             Margin = new Padding(0, 0, 0, 12),
         });
 
-        layout.Controls.Add(CreateLink(UiStrings.Get("Project page"), ProjectUrl));
-        layout.Controls.Add(CreateLink(UiStrings.Get("Desktop Commander (upstream)"), UpstreamUrl));
+        layout.Controls.Add(CreateLink(strings.Get(TextId.ProjectPage), ProjectUrl));
+        layout.Controls.Add(CreateLink(strings.Get(TextId.Upstream), UpstreamUrl));
 
         var folderLink = new LinkLabel
         {
-            Text = UiStrings.Format("Data folder: {0}", dataFolder),
+            Text = strings.Format(TextId.DataFolder, dataFolder),
             AutoSize = true,
             MaximumSize = new Size(390, 0),
             Margin = new Padding(0, 8, 0, 12),
@@ -76,7 +76,7 @@ internal sealed class AboutForm : Form
 
         var close = new Button
         {
-            Text = UiStrings.Get("Close"),
+            Text = strings.Get(TextId.Close),
             DialogResult = DialogResult.OK,
             AutoSize = true,
             Anchor = AnchorStyles.Right,
