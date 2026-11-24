@@ -1,6 +1,6 @@
 # Writing guide
 
-This guide applies to human and agent contributions: documentation, README files, help, errors, UI labels, source comments and delivery notes. It is inspired by Simplified Technical English, not certified ASD-STE100 compliance. Apply it to new or changed text; do not rewrite the repository to enforce style.
+This guide applies to human and agent contributions: documentation, README files, help, errors, UI labels, source comments and delivery notes. It is inspired by Simplified Technical English. Apply it to new or changed text; do not rewrite the repository to enforce style.
 
 - Use one term for each concept. Distinguish the tray app from the official Remote Device and the Store edition from the portable edition.
 - Name the actor, action and object. Put the condition before the action it controls.
