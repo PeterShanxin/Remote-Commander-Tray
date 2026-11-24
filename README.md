@@ -4,7 +4,7 @@
 
 Keep [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) running without leaving a terminal window open. Remote Commander Tray runs the official agent in the background and gives you connection status and controls in the Windows system tray.
 
-**[Install from Microsoft Store](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Download portable edition](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Migration guide](docs/STORE.md) · [Privacy policy](docs/PRIVACY.md) · [Watch the 35-second launch film](https://github.com/PeterShanxin/product-films/releases/tag/rct-launch-v1.1.0)
+**[Install from Microsoft Store](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Download portable edition](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Migration guide](docs/STORE.md) · [Privacy policy](docs/PRIVACY.md)
 
 It does not reimplement Desktop Commander or read its credential store. Raw CLI
 output is sensitive; ordinary logs and copied diagnostics deliberately omit it.
@@ -12,6 +12,10 @@ It owns exactly two things: the Windows user experience, and the lifecycle of on
 `desktop-commander remote` process.
 
 [中文说明](README.zh-CN.md)
+
+## Launch film
+
+[Download the original English film](https://github.com/PeterShanxin/product-films/releases/download/rct-launch-v1.1.0/remote-commander-tray-launch-en-v5.mp4).
 
 ## What it does
 
