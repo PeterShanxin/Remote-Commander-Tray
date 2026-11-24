@@ -13,7 +13,7 @@ dotnet test RemoteCommanderTray.sln -c Debug --no-build
 dotnet run --project tests/RemoteCommanderTray.Windows.Integration -c Debug --no-build
 ```
 
-The core suite has 194 cases. The separate Windows.Integration harness retains 10
+The separate Windows.Integration harness retains 10
 native scenarios, including owner-crash cleanup and environment inheritance. Windows
 tests add 13 cases covering actual process/job lifetime, isolated registry adapters
 and STA WinForms tray controls. Build the solution before running the standalone
@@ -40,12 +40,16 @@ results as payload. Authentication details and tool content remain absent from l
 
 ```sh
 dotnet test tests/RemoteCommanderTray.Core.Tests/RemoteCommanderTray.Core.Tests.csproj -c Release
+python3 -m unittest discover -s tests/linux -v
 bash tools/package-linux-beta.sh
 ```
 
-The Linux workflow runs the portable Core tests independently of Windows. Its
-Linux Beta job also tests a real user systemd service with a synthetic CLI and
-launches the native control window through its desktop entry. Windows x64 and
+The [CI workflow](../.github/workflows/ci.yml) runs the portable Core suite on Ubuntu
+independently of Windows. A separate job on Ubuntu 24.04 x64 unpacks the archive
+and runs [the Linux smoke test](../tests/linux/smoke.sh) in a disposable user
+systemd session. It verifies startup toggles, crash recovery, process cleanup,
+launch of the Tk window from its desktop entry, and uninstall with a synthetic CLI.
+It does not exercise real account pairing or remote connectivity. Windows x64 and
 ARM64 remain the authoritative gates for Windows-native behavior and packaging.
 See [Linux Beta](LINUX_BETA.md) for its separate support limits.
 
@@ -66,7 +70,7 @@ authentication and sign-in acceptance still require the manual checks below.
 
 ## Manual release acceptance
 
-These are not implied by unit tests or synthetic control tests:
+These Windows checks are not implied by unit tests or synthetic control tests:
 
 - Stop/disable the previous scheduled task or manual CLI before handing over to tray.
   Verify only one official device is online, and retain a way to restore the old launcher.
