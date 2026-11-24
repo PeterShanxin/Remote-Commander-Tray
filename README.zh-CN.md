@@ -2,7 +2,7 @@
 
 <img src="packaging/Assets/ListingLogo.png" alt="Remote Commander Tray 应用图标" width="80" height="80">
 
-在 Windows 系统托盘查看 [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) 的连接状态，重启或停止远程客户端。
+让 [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) 在后台运行，不用一直开着终端窗口。你可以直接在 Windows 系统托盘查看连接状态、重启或停止远程客户端。
 
 **[从 Microsoft Store 安装](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [下载便携版](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [版本迁移指南](docs/STORE.md) · [隐私政策](docs/PRIVACY.md) · [观看 35 秒中文发布短片](https://github.com/PeterShanxin/product-films/releases/download/rct-launch-v1.1.0/remote-commander-tray-launch-zh-v5.mp4)
 
