@@ -1,0 +1,19 @@
+[Unit]
+Description=Remote Commander Tray (Linux Beta)
+ConditionPathExists=%h/.local/share/remote-commander-tray/agent.json
+StartLimitIntervalSec=300
+StartLimitBurst=4
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 "%h/.local/share/remote-commander-tray/remote-commander-tray" run-agent
+Restart=on-failure
+RestartSec=15s
+KillMode=control-group
+TimeoutStopSec=10s
+# The official CLI may print pairing secrets and remote command output.
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=default.target

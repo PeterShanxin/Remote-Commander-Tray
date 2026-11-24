@@ -1,6 +1,6 @@
 # Agent Guide
 
-Remote Commander Tray is a Windows tray and process supervisor for the official Desktop Commander Remote Device. It uses C# 12, .NET 8 and WinForms. Maintain the Windows x64 and ARM64 paths.
+Remote Commander Tray is a Windows tray and process supervisor for the official Desktop Commander Remote Device. The Windows app uses C# 12, .NET 8 and WinForms. Maintain the Windows x64 and ARM64 paths. [Linux Beta](LINUX_BETA.md) is a separate desktop window and systemd user service.
 
 ## Source of truth
 
@@ -9,6 +9,7 @@ Use the nearest applicable repository instructions for workflow. For implementat
 | Path | Owns |
 | --- | --- |
 | [Core](../src/RemoteCommanderTray.Core) | CLI parsing, state, supervision, settings and diagnostic policy |
+| [Linux Beta](../linux) | Per-user service, desktop controls and installation |
 | [Windows](../src/RemoteCommanderTray/Windows) | Native process containment and startup registration |
 | [UI](../src/RemoteCommanderTray/UI) | Tray menu, status, notifications and dialogs |
 | [Tests](../tests) | Core, Windows controls and native process verification with synthetic agents |

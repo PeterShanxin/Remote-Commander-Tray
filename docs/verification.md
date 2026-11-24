@@ -36,6 +36,19 @@ remaining Online after the five-minute stall deadline. Negative cases retain JSO
 quoted strings, arrays, unknown or malformed bracket prefixes, and multiline tool
 results as payload. Authentication details and tool content remain absent from logs.
 
+## Ubuntu checks
+
+```sh
+dotnet test tests/RemoteCommanderTray.Core.Tests/RemoteCommanderTray.Core.Tests.csproj -c Release
+bash tools/package-linux-beta.sh
+```
+
+The Linux workflow runs the portable Core tests independently of Windows. Its
+Linux Beta job also tests a real user systemd service with a synthetic CLI and
+launches the native control window through its desktop entry. Windows x64 and
+ARM64 remain the authoritative gates for Windows-native behavior and packaging.
+See [Linux Beta](LINUX_BETA.md) for its separate support limits.
+
 ## Local evidence
 
 The timestamp-prefix fix was exercised on 2026-11-07 on Windows ARM64 with SDK

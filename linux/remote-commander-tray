@@ -1,0 +1,225 @@
+#!/usr/bin/python3
+"""Linux Beta controls for the user-owned Desktop Commander service."""
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+
+UNIT = "remote-commander-tray.service"
+HOME = Path.home()
+DATA = HOME / ".local/share/remote-commander-tray"
+COMMAND = DATA / "agent.json"
+UNIT_PATH = HOME / ".config/systemd/user" / UNIT
+DESKTOP = HOME / ".local/share/applications/remote-commander-tray.desktop"
+INSTALLER_FILES = ("remote-commander-tray", UNIT)
+SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin"
+
+
+def control(*args, output=False):
+    """Only local user-service controls; never elevate or invoke a shell."""
+    return subprocess.run(
+        ["/usr/bin/systemctl", "--user", *args],
+        text=True, capture_output=output, timeout=30, check=False, stdin=subprocess.DEVNULL,
+    )
+
+
+def require(*args):
+    if control(*args).returncode:
+        raise ValueError("The user systemd operation failed. Check your login session and service status.")
+
+
+def status():
+    result = control("show", "--property=ActiveState,SubState,UnitFileState,LoadState", UNIT, output=True)
+    fields = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    if fields.get("LoadState") == "not-found":
+        return "Not installed"
+    if result.returncode:
+        return "User systemd session unavailable"
+    state = {
+        "active": "Running (connection not verified)",
+        "activating": "Starting or waiting to retry",
+        "deactivating": "Stopping",
+        "inactive": "Stopped",
+        "failed": "Failed; check the official CLI and try Start",
+    }.get(fields.get("ActiveState"), "Status unavailable")
+    startup = "on" if fields.get("UnitFileState") == "enabled" else "off"
+    return f"{state} | Start with user session: {startup}"
+
+
+def desktop_entry():
+    # Desktop Entry string escapes are decoded before Exec quote removal.
+    target = str(DATA / "remote-commander-tray").replace("%", "%%")
+    for char in ('\\', '"', '$', chr(96)):
+        target = target.replace(char, '\\' + char)
+    target = target.replace('\\', '\\\\')
+    return f"""[Desktop Entry]
+Name=Remote Commander Tray (Linux Beta)
+Comment=Control the local Desktop Commander Remote service
+Exec=/usr/bin/python3 "{target}" gui
+Icon=network-server
+Terminal=false
+Type=Application
+Categories=Utility;
+"""
+
+
+def install():
+    if control("show-environment", output=True).returncode:
+        raise ValueError("A running systemd user session is required. Run from a normal user login.")
+    cli = shutil.which("desktop-commander")
+    node = shutil.which("node")
+    if not cli or not node or not all(Path(p).is_absolute() for p in (cli, node)):
+        raise ValueError("Install Node.js and the official Desktop Commander CLI, then rerun install.")
+    # Check the same Node the launcher will use, not the one in systemd's PATH.
+    result = subprocess.run([node, "--version"], text=True, capture_output=True, timeout=10, check=False)
+    try:
+        major, minor, *_ = map(int, result.stdout.strip().removeprefix("v").split("."))
+    except ValueError as error:
+        raise ValueError("Node.js version could not be checked.") from error
+    if result.returncode or (major, minor) < (22, 12):
+        raise ValueError("Node.js 22.12 or newer is required.")
+    DATA.mkdir(parents=True, exist_ok=True, mode=0o700)
+    source = Path(__file__).resolve().parent
+    for filename in INSTALLER_FILES:
+        destination = DATA / filename
+        if source / filename != destination:
+            shutil.copyfile(source / filename, destination)
+        if filename == "remote-commander-tray":
+            destination.chmod(0o755)
+    UNIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DESKTOP.parent.mkdir(parents=True, exist_ok=True)
+    settings = {"executable": cli, "nodeDirectory": str(Path(node).parent)}
+    temporary = COMMAND.with_suffix(".tmp")
+    temporary.write_text(json.dumps(settings), encoding="utf-8")
+    temporary.replace(COMMAND)
+    shutil.copyfile(DATA / UNIT, UNIT_PATH)
+    DESKTOP.write_text(desktop_entry(), encoding="utf-8")
+    require("daemon-reload")
+    print("Installed. Pair in a terminal with the official CLI before starting this companion.")
+
+
+def run_agent():
+    settings = json.loads(COMMAND.read_text(encoding="utf-8"))
+    executable = settings["executable"]
+    node_directory = settings["nodeDirectory"]
+    if not all(Path(p).is_absolute() for p in (executable, node_directory)):
+        raise ValueError("Run install again to repair the official CLI paths.")
+    path = os.pathsep.join((node_directory, str(Path(executable).parent), SYSTEM_PATH))
+    os.execve(executable, [executable, "remote"], dict(os.environ, PATH=path))
+
+
+def uninstall():
+    if UNIT_PATH.exists():
+        require("disable", "--now", UNIT)
+        UNIT_PATH.unlink()
+        require("daemon-reload")
+    DESKTOP.unlink(missing_ok=True)
+    for filename in (*INSTALLER_FILES, COMMAND.name):
+        (DATA / filename).unlink(missing_ok=True)
+    if DATA.is_dir() and not any(DATA.iterdir()):
+        DATA.rmdir()
+    print("Uninstalled. Official Desktop Commander files and sign-in were left in place.")
+
+
+def gui():
+    try:
+        import tkinter as tk
+        from tkinter import messagebox, ttk
+    except ImportError as error:
+        raise ValueError("Install your distribution's Python Tk package to use the desktop window.") from error
+    import queue
+    import threading
+
+    try:
+        window = tk.Tk()
+    except tk.TclError as error:
+        raise ValueError("No desktop session. Use the status, start, stop or restart commands.") from error
+    window.title("Remote Commander Tray · Linux Beta")
+    window.resizable(False, False)
+    content = ttk.Frame(window, padding=24)
+    content.grid(sticky="nsew")
+    ttk.Label(content, text="Desktop Commander Remote", font=("TkDefaultFont", 15, "bold")).grid(sticky="w")
+    label = tk.StringVar(value="Checking service…")
+    ttk.Label(content, textvariable=label, padding=(0, 12)).grid(sticky="w")
+    ttk.Label(content, text="Connection and sign-in are handled by the official CLI.").grid(sticky="w")
+    actions = ttk.Frame(content, padding=(0, 16, 0, 0))
+    actions.grid(sticky="w")
+    updates = queue.Queue()
+    busy = False
+
+    def execute(command=None):
+        nonlocal busy
+        if busy:
+            return
+        busy = True
+        if command:
+            label.set("Updating service…")
+
+        def worker():
+            try:
+                if command:
+                    change(command)
+                updates.put((status(), None))
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                updates.put(("Status unavailable", str(error) if isinstance(error, ValueError) else "Could not reach the user service."))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def poll():
+        nonlocal busy
+        try:
+            state, error = updates.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            busy = False
+            label.set(state)
+            if error:
+                messagebox.showerror("Remote Commander Tray", error, parent=window)
+        window.after(100, poll)
+
+    def refresh():
+        execute()
+        window.after(3000, refresh)
+
+    for title, action in (("Start", "start"), ("Stop", "stop"), ("Restart", "restart"),
+                          ("Enable startup", "enable"), ("Disable startup", "disable")):
+        ttk.Button(actions, text=title, command=lambda value=action: execute(value)).pack(side="left", padx=(0, 6))
+    window.after(0, refresh)
+    window.after(100, poll)
+    window.mainloop()
+
+
+def change(action):
+    # Clear the retry limit only on an explicit user command after a failure.
+    if action in ("start", "restart"):
+        result = control("is-failed", UNIT, output=True)
+        if result.stdout.strip() == "failed":
+            require("reset-failed", UNIT)
+    require(action, UNIT)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", nargs="?", default="gui",
+                        choices=("install", "uninstall", "status", "gui", "start", "stop",
+                                 "restart", "enable", "disable", "run-agent"))
+    action = parser.parse_args().action
+    if os.geteuid() == 0:
+        parser.exit(1, "Run as your regular user, not root.\n")
+    try:
+        if action == "status":
+            print(status())
+        elif action in ("start", "stop", "restart", "enable", "disable"):
+            change(action)
+        else:
+            {"install": install, "uninstall": uninstall, "gui": gui, "run-agent": run_agent}[action]()
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        detail = str(error) if isinstance(error, ValueError) else "Check service installation and permissions."
+        parser.exit(1, f"{detail}\n")
+
+
+if __name__ == "__main__":
+    main()
