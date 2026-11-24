@@ -15,6 +15,8 @@ It owns exactly two things: the Windows user experience, and the lifecycle of on
 
 ## Launch film
 
+https://github.com/user-attachments/assets/29d50e07-b58c-49ce-9773-f3f5914098f7
+
 [Download the original English film](https://github.com/PeterShanxin/product-films/releases/download/rct-launch-v1.1.0/remote-commander-tray-launch-en-v5.mp4).
 
 ## What it does

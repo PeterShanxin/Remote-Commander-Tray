@@ -14,6 +14,8 @@ Windows 侧的使用体验，以及一个 `desktop-commander remote` 进程的�
 
 ## 发布短片
 
+https://github.com/user-attachments/assets/a829301f-5549-4a1a-a61a-19d91324b6d6
+
 [下载原版中文短片](https://github.com/PeterShanxin/product-films/releases/download/rct-launch-v1.1.0/remote-commander-tray-launch-zh-v5.mp4)。
 
 ## 功能
