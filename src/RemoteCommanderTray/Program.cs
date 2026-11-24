@@ -111,7 +111,7 @@ internal static class Program
 
         try
         {
-            using var context = new TrayApplicationContext(paths, settings, log, version);
+            using var context = new TrayApplicationContext(paths, settings, log, version, startedByWindows);
             Application.Run(context);
         }
         catch (Exception ex)

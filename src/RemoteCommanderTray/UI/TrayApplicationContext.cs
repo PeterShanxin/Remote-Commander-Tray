@@ -25,6 +25,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly WindowsAgentProcessFactory _processFactory;
     private readonly TrayIcons _icons = new();
     private readonly NotifyIcon _notifyIcon;
+    private readonly Action<int, string, string, ToolTipIcon> _showBalloonTip;
     private readonly ContextMenuStrip _menu;
     private readonly Control _marshal;
     private readonly string _version;
@@ -46,6 +47,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _busy;
     private bool _exiting;
     private bool _startupBusy;
+    private bool _launchBalloon;
     private Task? _supervisorDisposeTask;
     private bool _supervisorDisposeFailureReported;
 
@@ -53,7 +55,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         AppPaths paths,
         TraySettings settings,
         RollingFileLog log,
-        string version)
+        string version,
+        bool startedByWindows,
+        Action<int, string, string, ToolTipIcon>? showBalloonTip = null)
     {
         _paths = paths;
         _log = log;
@@ -155,6 +159,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ContextMenuStrip = _menu,
             Visible = true,
         };
+        _showBalloonTip = showBalloonTip ?? _notifyIcon.ShowBalloonTip;
         _notifyIcon.BalloonTipClicked += (_, _) => OnBalloonClicked();
         _notifyIcon.MouseClick += (_, e) =>
         {
@@ -168,6 +173,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _supervisor.Notification += (_, notification) => OnUiThread(() => ShowNotification(notification));
 
         ApplySnapshot(_supervisor.Snapshot);
+        if (!startedByWindows && settings.NotificationsEnabled)
+        {
+            ShowBalloon(5_000, _strings.Get(TextId.LaunchTitle),
+                _strings.Get(settings.StartAgentOnLaunch ? TextId.LaunchConnecting : TextId.LaunchAgentStopped),
+                ToolTipIcon.Info, launch: true);
+        }
+
         Run(_supervisor.InitializeAsync);
     }
 
@@ -476,21 +488,29 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
 
         var localized = _strings.Notification(notification);
-        _notifyIcon.ShowBalloonTip(10_000, localized.Title, localized.Message, icon);
+        ShowBalloon(10_000, localized.Title, localized.Message, icon);
     }
 
     private void ShowStatusBalloon()
     {
 
-        _notifyIcon.ShowBalloonTip(
+        ShowBalloon(
             5_000,
             _strings.Format(TextId.StatusTitle, _strings.State(_snapshot)),
             BuildDetailLine(_snapshot),
             ToolTipIcon.None);
     }
 
+    private void ShowBalloon(int timeout, string title, string message, ToolTipIcon icon, bool launch = false)
+    {
+        _launchBalloon = launch;
+        _showBalloonTip(timeout, title, message, icon);
+    }
+
     private void OnBalloonClicked()
     {
+        if (_launchBalloon) return;
+
         // The auth notification may have preceded the CLI's URL line. Always use
         // the current generation's live prompt, never a stale completed sign-in URL.
         var uri = _snapshot.State == AgentState.AuthenticationRequired ? _snapshot.VerificationUri : null;
@@ -546,7 +566,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         try
         {
             Clipboard.SetText(value);
-            _notifyIcon.ShowBalloonTip(3_000, "Remote Commander Tray", successMessage, ToolTipIcon.None);
+            ShowBalloon(3_000, "Remote Commander Tray", successMessage, ToolTipIcon.None);
         }
         catch (Exception ex) when (ex is System.Runtime.InteropServices.ExternalException or ThreadStateException)
         {

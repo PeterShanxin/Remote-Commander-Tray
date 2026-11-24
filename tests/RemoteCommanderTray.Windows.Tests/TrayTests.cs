@@ -20,7 +20,7 @@ public sealed class TrayTests
                 var settings = new TraySettings { StartAgentOnLaunch = false, NotificationsEnabled = false, Language = "en",
                     AgentExecutable = ProcessTests.Dotnet, AgentArguments = $"\"{ProcessTests.Probe}\" ready" };
                 using var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
-                using var tray = new TrayApplicationContext(paths, settings, log, "test");
+                using var tray = new TrayApplicationContext(paths, settings, log, "test", startedByWindows: true);
                 var supervisor = Field<AgentSupervisor>(tray, "_supervisor");
                 var toggle = Field<ToolStripMenuItem>(tray, "_toggleAgentItem");
                 var restart = Field<ToolStripMenuItem>(tray, "_restartItem");
@@ -58,7 +58,7 @@ public sealed class TrayTests
                 var paths = new AppPaths(root); paths.EnsureCreated();
                 var settings = new TraySettings { StartAgentOnLaunch = false, NotificationsEnabled = false };
                 var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
-                tray = new TrayApplicationContext(paths, settings, log, "test");
+                tray = new TrayApplicationContext(paths, settings, log, "test", startedByWindows: true);
 
                 // Dispose the real supervisor first, then model the same cached fault
                 // ShutdownAsync has already caught before ExitThread triggers Dispose.
@@ -94,7 +94,7 @@ public sealed class TrayTests
                 var paths = new AppPaths(root); paths.EnsureCreated();
                 var settings = new TraySettings { Language = "en", StartAgentOnLaunch = false, NotificationsEnabled = false };
                 using var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
-                using var tray = new TrayApplicationContext(paths, settings, log, "test");
+                using var tray = new TrayApplicationContext(paths, settings, log, "test", startedByWindows: true);
                 var toggle = Field<ToolStripMenuItem>(tray, "_toggleAgentItem");
                 var menu = Field<ToolStripMenuItem>(tray, "_languageItem");
                 Assert.Equal("Start agent", toggle.Text);
@@ -112,7 +112,7 @@ public sealed class TrayTests
                 }
                 tray.Dispose();
 
-                using var reopened = new TrayApplicationContext(paths, saved, log, "test");
+                using var reopened = new TrayApplicationContext(paths, saved, log, "test", startedByWindows: true);
                 var reopenedToggle = Field<ToolStripMenuItem>(reopened, "_toggleAgentItem");
                 Assert.Equal("启动 Agent", reopenedToggle.Text);
                 var reopenedMenu = Field<ToolStripMenuItem>(reopened, "_languageItem");
@@ -139,6 +139,57 @@ public sealed class TrayTests
         }) { IsBackground = true };
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         await done.Task.WaitAsync(TimeSpan.FromSeconds(20));
+    }
+
+    [Theory]
+    [InlineData(false, true, true, "en", "Remote Commander Tray is running", "Connecting to Desktop Commander…")]
+    [InlineData(false, true, false, "zh-CN", "Remote Commander Tray 已启动", "打开托盘菜单即可启动 Agent。")]
+    [InlineData(false, false, true, "en", null, null)]
+    [InlineData(true, true, true, "en", null, null)]
+    public async Task Only_manual_launch_with_notifications_enabled_confirms_startup(
+        bool startedByWindows, bool notificationsEnabled, bool startAgent,
+        string language, string? expectedTitle, string? expectedMessage)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            var root = Path.Combine(Path.GetTempPath(), "rct-tray-launch-" + Guid.NewGuid());
+            try
+            {
+                var paths = new AppPaths(root);
+                paths.EnsureCreated();
+                var settings = new TraySettings
+                {
+                    StartAgentOnLaunch = startAgent,
+                    NotificationsEnabled = notificationsEnabled,
+                    Language = language,
+                    AgentExecutable = ProcessTests.Dotnet,
+                    AgentArguments = $"\"{ProcessTests.Probe}\" ready",
+                };
+                using var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
+                var balloons = new List<(string Title, string Message, ToolTipIcon Icon)>();
+                using var tray = new TrayApplicationContext(paths, settings, log, "test", startedByWindows,
+                    (_, title, message, icon) => balloons.Add((title, message, icon)));
+                if (expectedTitle is null) Assert.Empty(balloons);
+                else Assert.Equal((expectedTitle, expectedMessage, ToolTipIcon.Info), Assert.Single(balloons));
+
+                if (startAgent)
+                {
+                    var supervisor = Field<AgentSupervisor>(tray, "_supervisor");
+                    var restart = Field<ToolStripMenuItem>(tray, "_restartItem");
+                    Pump(() => supervisor.Snapshot.State == AgentState.Online && restart.Enabled);
+                    restart.PerformClick();
+                    Pump(() => supervisor.Snapshot.State == AgentState.Online && supervisor.Snapshot.TotalRestartCount == 1 && restart.Enabled);
+                    Assert.Equal(expectedTitle is null ? 0 : 1, balloons.Count);
+                }
+                done.TrySetResult();
+            }
+            catch (Exception ex) { done.TrySetException(ex); }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(40));
     }
 
     private static T Field<T>(object target, string name)

@@ -7,6 +7,9 @@ namespace RemoteCommanderTray.UI;
 internal enum TextId
 {
     StartingEllipsis,
+    LaunchTitle,
+    LaunchConnecting,
+    LaunchAgentStopped,
     LastConnectedNever,
     OpenSignInPage,
     SignInAgain,
@@ -155,6 +158,9 @@ internal sealed class UiStrings
     private static readonly IReadOnlyDictionary<TextId, (string En, string Zh)> Catalog =
         new Dictionary<TextId, (string, string)>
         {
+            [TextId.LaunchTitle] = ("Remote Commander Tray is running", "Remote Commander Tray 已启动"),
+            [TextId.LaunchConnecting] = ("Connecting to Desktop Commander…", "正在连接 Desktop Commander…"),
+            [TextId.LaunchAgentStopped] = ("Open the tray menu to start the agent.", "打开托盘菜单即可启动 Agent。"),
             [TextId.StartingEllipsis] = ("Starting...", "正在启动…"),
             [TextId.LastConnectedNever] = ("Last connected: never", "上次连接：从未"),
             [TextId.OpenSignInPage] = ("Open sign-in page", "打开登录页面"),
