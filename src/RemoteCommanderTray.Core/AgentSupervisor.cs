@@ -167,7 +167,8 @@ public sealed class AgentSupervisor : IAsyncDisposable
             Raise(new TrayNotification(NotificationKind.ReauthenticationStarted,
                 "Remote Commander - sign-in needed",
                 "Finish the official Desktop Commander sign-in in your browser. "
-                + "Use Open sign-in page in the tray if no browser opens."));
+                + "Use Open sign-in page in the tray if no browser opens.")
+                { MessageId = NotificationMessageId.ReauthenticationStarted });
             await StartCoreAsync(authenticationAlreadyNotified: true).ConfigureAwait(false);
         }
         finally { _mutex.Release(); }
@@ -261,7 +262,8 @@ public sealed class AgentSupervisor : IAsyncDisposable
             _machine.OnCleanupFailed();
             Raise(new TrayNotification(NotificationKind.StartFailure,
                 "Remote Commander - cleanup failed",
-                "The prior agent could not be fully cleaned up. No replacement will be started. Exit the tray."));
+                "The prior agent could not be fully cleaned up. No replacement will be started. Exit the tray.")
+                { MessageId = NotificationMessageId.CleanupFailed });
             throw;
         }
     }
@@ -428,7 +430,8 @@ public sealed class AgentSupervisor : IAsyncDisposable
             _stallNotified = true;
             _machine.OnConnectionStalled(elapsed);
             Raise(new TrayNotification(NotificationKind.ConnectionStalled, "Remote Commander - not connected",
-                "The device has not come online. Try Restart connection, or Re-authenticate if sign-in expired."));
+                "The device has not come online. Try Restart connection, or Re-authenticate if sign-in expired.")
+                { MessageId = NotificationMessageId.ConnectionStalled });
         }
         finally { _mutex.Release(); }
     }
@@ -443,7 +446,8 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 Raise(new TrayNotification(NotificationKind.AuthenticationRequired,
                     "Remote Commander - sign-in required",
                     "Desktop Commander needs you to sign in. Use Open sign-in page, or Re-authenticate if the session expired.",
-                    snapshot.VerificationUri));
+                    snapshot.VerificationUri)
+                    { MessageId = NotificationMessageId.SignInRequired });
             }
             else if (snapshot.State == AgentState.Online) _authNotified = false;
             Changed?.Invoke(this, snapshot);
@@ -455,7 +459,11 @@ public sealed class AgentSupervisor : IAsyncDisposable
         if (_consecutiveFailures < _settings().StartFailureAlertThreshold || _startFailureNotified) return;
         _startFailureNotified = true;
         Raise(new TrayNotification(NotificationKind.StartFailure, "Remote Commander - agent keeps failing",
-            $"The Desktop Commander agent failed to stay running {_consecutiveFailures} times in a row. Open logs for details."));
+            $"The Desktop Commander agent failed to stay running {_consecutiveFailures} times in a row. Open logs for details.")
+            {
+                MessageId = NotificationMessageId.RepeatedFailure,
+                FailureCount = _consecutiveFailures,
+            });
     }
 
     private void ReportUnavailable(string? problem)
@@ -463,7 +471,8 @@ public sealed class AgentSupervisor : IAsyncDisposable
         _machine.OnProcessExited(null, userRequested: false);
         _log.Write(LogSource.Tray, "Agent launch unavailable. Check installation and configuration.");
         Raise(new TrayNotification(NotificationKind.AgentUnavailable, "Remote Commander - agent unavailable",
-            problem ?? "Desktop Commander could not be found."));
+            problem ?? "Desktop Commander could not be found.")
+            { MessageId = NotificationMessageId.AgentUnavailable });
     }
 
     private void Raise(TrayNotification notification)

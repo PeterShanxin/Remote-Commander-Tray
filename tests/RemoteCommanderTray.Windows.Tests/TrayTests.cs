@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Reflection;
 using RemoteCommanderTray.Core;
 using RemoteCommanderTray.UI;
+using RemoteCommanderTray.Windows;
 using Xunit;
 namespace RemoteCommanderTray.Windows.Tests;
 
@@ -16,7 +17,7 @@ public sealed class TrayTests
             try
             {
                 var paths = new AppPaths(root); paths.EnsureCreated();
-                var settings = new TraySettings { StartAgentOnLaunch = false, NotificationsEnabled = false,
+                var settings = new TraySettings { StartAgentOnLaunch = false, NotificationsEnabled = false, Language = "en",
                     AgentExecutable = ProcessTests.Dotnet, AgentArguments = $"\"{ProcessTests.Probe}\" ready" };
                 using var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
                 using var tray = new TrayApplicationContext(paths, settings, log, "test");
@@ -76,6 +77,65 @@ public sealed class TrayTests
                 tray?.Dispose();
                 if (Directory.Exists(root)) Directory.Delete(root, true);
             }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA); thread.Start();
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(20));
+    }
+
+    [Fact]
+    public async Task Switching_to_simplified_chinese_updates_menu_and_saves_setting()
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            var root = Path.Combine(Path.GetTempPath(), "rct-tray-lang-" + Guid.NewGuid());
+            try
+            {
+                var paths = new AppPaths(root); paths.EnsureCreated();
+                var settings = new TraySettings { Language = "en", StartAgentOnLaunch = false, NotificationsEnabled = false };
+                using var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
+                using var tray = new TrayApplicationContext(paths, settings, log, "test");
+                var toggle = Field<ToolStripMenuItem>(tray, "_toggleAgentItem");
+                var menu = Field<ToolStripMenuItem>(tray, "_languageItem");
+                Assert.Equal("Start agent", toggle.Text);
+                var chinese = menu.DropDownItems.OfType<ToolStripMenuItem>().Single(x => (string?)x.Tag == "zh-CN");
+                chinese.PerformClick();
+                Assert.Equal("启动 Agent", toggle.Text);
+                var saved = new SettingsStore(paths.SettingsFile).Load();
+                Assert.Equal("zh-CN", saved.Language);
+                Assert.True(chinese.Checked);
+                using (var about = new AboutForm("test", SystemIcons.Application, paths.Root, new UiStrings(saved.Language)))
+                {
+                    Assert.Equal("关于 Remote Commander Tray", about.Text);
+                    Assert.Equal("关闭", Assert.IsType<Button>(about.AcceptButton).Text);
+                    Assert.True(about.AutoSize);
+                }
+                tray.Dispose();
+
+                using var reopened = new TrayApplicationContext(paths, saved, log, "test");
+                var reopenedToggle = Field<ToolStripMenuItem>(reopened, "_toggleAgentItem");
+                Assert.Equal("启动 Agent", reopenedToggle.Text);
+                var reopenedMenu = Field<ToolStripMenuItem>(reopened, "_languageItem");
+                var english = reopenedMenu.DropDownItems.OfType<ToolStripMenuItem>()
+                    .Single(x => (string?)x.Tag == "en");
+                english.PerformClick();
+                Assert.Equal("Start agent", reopenedToggle.Text);
+                Assert.Equal("en", new SettingsStore(paths.SettingsFile).Load().Language);
+                Assert.True(english.Checked);
+                var followWindows = reopenedMenu.DropDownItems.OfType<ToolStripMenuItem>()
+                    .Single(x => (string?)x.Tag == "auto");
+                followWindows.PerformClick();
+                var windowsLanguages = WindowsUiLanguages.GetPreferred();
+                Assert.NotEmpty(windowsLanguages);
+                var expected = UiStrings.UseSimplifiedChinese(windowsLanguages) ? "启动 Agent" : "Start agent";
+                Assert.Equal(expected, reopenedToggle.Text);
+                Assert.Equal("auto", new SettingsStore(paths.SettingsFile).Load().Language);
+                Assert.True(followWindows.Checked);
+                reopened.Dispose();
+                done.TrySetResult();
+            }
+            catch (Exception ex) { done.TrySetException(ex); }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
         }) { IsBackground = true };
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         await done.Task.WaitAsync(TimeSpan.FromSeconds(20));

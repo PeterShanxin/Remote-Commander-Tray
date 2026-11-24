@@ -182,6 +182,10 @@ dotnet publish src/RemoteCommanderTray/RemoteCommanderTray.csproj -c Release -r 
 完整测试在 Windows x64/ARM64 的 .NET 8 CI 上执行；Linux/macOS 可单独运行核心测试项目。
 自动化覆盖、真实环境测试范围和仍需人工验收的项目见 [验证说明](docs/verification.md)。
 
+## 界面语言
+
+本工具支持英文与简体中文。右键托盘图标，选择 **语言 / Language**，即可选用**跟随系统**、**English** 或 **简体中文**。配置会保存到 settings.json 的 language 字段（`auto`、`en`、zh-CN）；切换语言即时生效，无须重启远程 Agent。
+
 ## 参与贡献
 
 请参阅[贡献指南](CONTRIBUTING.md)、[编码规范](docs/CODING_STANDARDS.md)和[写作指南](docs/WRITING_GUIDE.md)。
