@@ -116,10 +116,40 @@ jobs:
           python tools/generate-icon.py
           git diff --exit-code -- src/RemoteCommanderTray/app.ico
 
+  linux-beta:
+    name: Linux Beta (Ubuntu user service and desktop)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install desktop test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk xvfb x11-utils libglib2.0-bin
+      - name: Start disposable runner user manager
+        run: |
+          sudo loginctl enable-linger "$(id -un)"
+          sudo systemctl start "user@$(id -u).service"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+      - run: python3 -m unittest discover -s tests/linux -v
+      - name: Build Linux Beta archive
+        run: bash tools/package-linux-beta.sh
+      - name: Exercise unpacked beta on a synthetic CLI
+        run: |
+          mkdir -p "$RUNNER_TEMP/tray-linux"
+          tar -xzf publish/RemoteCommanderTray-linux-beta.tar.gz -C "$RUNNER_TEMP/tray-linux"
+          bash tests/linux/smoke.sh "$RUNNER_TEMP/tray-linux/RemoteCommanderTray-linux-beta"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RemoteCommanderTray-linux-beta
+          path: publish/RemoteCommanderTray-linux-beta.tar.gz
+          if-no-files-found: error
+
   release:
     name: Publish versioned release
     runs-on: ubuntu-latest
-    needs: [publish, icon, test-gate]
+    needs: [publish, icon, test-gate, linux-beta]
     # A version bump merged to main creates the release automatically. Tag pushes are
     # still supported for recovery/manual releases. Pull requests never publish.
     if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
@@ -264,6 +294,7 @@ jobs:
           mkdir -p release
           cp artifacts/RemoteCommanderTray-win-x64/RemoteCommanderTray.exe release/RemoteCommanderTray-win-x64.exe
           cp artifacts/RemoteCommanderTray-win-arm64/RemoteCommanderTray.exe release/RemoteCommanderTray-win-arm64.exe
+          cp artifacts/RemoteCommanderTray-linux-beta/RemoteCommanderTray-linux-beta.tar.gz release/RemoteCommanderTray-linux-beta.tar.gz
 
           gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
             -f tag_name="${TAG}" \
@@ -284,6 +315,11 @@ jobs:
           > If you already run `desktop-commander remote` from a terminal or Scheduled
           > Task, stop/disable that launcher before letting the tray supervise the agent.
           > Do not run two supervisors at the same time.
+
+          ### Linux Beta
+          - **Ubuntu 24.04 x64 beta:** Download and extract the Linux Beta archive, then follow the included LINUX_BETA.md guide.
+          - Linux uses a user service with a desktop window, not the Windows tray app.
+          - Other distributions and architectures have not been verified.
           EOF
 
           if [[ -s generated-notes.md ]]; then
@@ -337,6 +373,7 @@ jobs:
           upload_asset() {
             local file="$1"
             local name="$2"
+            local content_type="$3"
 
             existing_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
               --jq ".assets[] | select(.name == \"${name}\") | .id")"
@@ -352,7 +389,7 @@ jobs:
               --header "Authorization: Bearer ${GH_TOKEN}" \
               --header "Accept: application/vnd.github+json" \
               --header "X-GitHub-Api-Version: 2022-11-28" \
-              --header "Content-Type: application/octet-stream" \
+              --header "Content-Type: ${content_type}" \
               --data-binary @"${file}" \
               "https://uploads.github.com/repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?name=${name}")"
 
@@ -366,15 +403,16 @@ jobs:
             uploaded_size="$(jq -r '.size' < "${response_file}")"
             rm -f "${response_file}"
 
-            if [[ "${uploaded_name}" != "${name}" || "${uploaded_size}" -lt 1000000 ]]; then
+            if [[ "${uploaded_name}" != "${name}" || "${uploaded_size}" != "$(stat -c %s "${file}")" ]]; then
               echo "Uploaded asset response is invalid for ${name} (name=${uploaded_name}, size=${uploaded_size})." >&2
               exit 1
             fi
             echo "Uploaded ${name}: ${uploaded_size} bytes"
           }
 
-          upload_asset release/RemoteCommanderTray-win-x64.exe RemoteCommanderTray-win-x64.exe
-          upload_asset release/RemoteCommanderTray-win-arm64.exe RemoteCommanderTray-win-arm64.exe
+          upload_asset release/RemoteCommanderTray-win-x64.exe RemoteCommanderTray-win-x64.exe application/octet-stream
+          upload_asset release/RemoteCommanderTray-win-arm64.exe RemoteCommanderTray-win-arm64.exe application/octet-stream
+          upload_asset release/RemoteCommanderTray-linux-beta.tar.gz RemoteCommanderTray-linux-beta.tar.gz application/gzip
 
       - name: Verify assets and publish
         if: steps.release.outputs.action != 'skip'
@@ -394,6 +432,7 @@ jobs:
           expected=(
             "RemoteCommanderTray-win-x64.exe"
             "RemoteCommanderTray-win-arm64.exe"
+            "RemoteCommanderTray-linux-beta.tar.gz"
           )
 
           for attempt in {1..10}; do
@@ -419,13 +458,23 @@ jobs:
             exit 1
           fi
 
+          if [[ "$(jq '.assets | length' <<<"$draft_json")" -ne "${#expected[@]}" ]]; then
+            echo "Draft has an unexpected set of assets; refusing to publish." >&2
+            exit 1
+          fi
           for name in "${expected[@]}"; do
-            size="$(jq -r --arg name "${name}" '.assets[] | select(.name == $name) | .size' <<<"${draft_json}")"
-            if [[ -z "${size}" || "${size}" == "null" || "${size}" -lt 1000000 ]]; then
-              echo "Release asset ${name} is missing or unexpectedly small (${size:-missing})." >&2
+            expected_size="$(stat -c %s "release/$name")"
+            expected_digest="sha256:$(sha256sum "release/$name" | cut -d ' ' -f 1)"
+            min_size=1000000
+            if [[ "$name" == *.tar.gz ]]; then min_size=1024; fi
+            if [[ "$expected_size" -lt "$min_size" ]] || ! jq -e \
+              --arg name "$name" --arg digest "$expected_digest" --argjson size "$expected_size" \
+              'any(.assets[]; .name == $name and .size == $size and .digest == $digest and .state == "uploaded")' \
+              <<<"$draft_json" >/dev/null; then
+              echo "Draft asset $name does not match the verified build; refusing to publish." >&2
               exit 1
             fi
-            echo "Verified ${name}: ${size} bytes"
+            echo "Verified $name: $expected_size bytes ($expected_digest)"
           done
 
           make_latest=true
