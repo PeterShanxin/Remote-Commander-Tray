@@ -2,7 +2,7 @@
 
 Monitor, restart, or stop your [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) connection from the Windows system tray.
 
-**[Install from Microsoft Store](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Download portable edition](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Migration guide](docs/STORE.md) · [Privacy policy](docs/PRIVACY.md) · [Watch the 35-second launch film](https://github.com/PeterShanxin/product-films/releases/tag/rct-launch-v1.0.0)
+**[Install from Microsoft Store](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Download portable edition](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Migration guide](docs/STORE.md) · [Privacy policy](docs/PRIVACY.md) · [Watch the 35-second launch film](https://github.com/PeterShanxin/product-films/releases/tag/rct-launch-v1.1.0)
 
 It does not reimplement Desktop Commander or read its credential store. Raw CLI
 output is sensitive; ordinary logs and copied diagnostics deliberately omit it.
