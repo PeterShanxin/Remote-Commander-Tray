@@ -1,6 +1,8 @@
 # Remote Commander Tray
 
-Monitor, restart, or stop your [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) connection from the Windows system tray.
+<img src="packaging/Assets/ListingLogo.png" alt="Remote Commander Tray app icon" width="80" height="80">
+
+Keep [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) running without leaving a terminal window open. Remote Commander Tray runs the official agent in the background and gives you connection status and controls in the Windows system tray.
 
 **[Install from Microsoft Store](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Download portable edition](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Migration guide](docs/STORE.md) · [Privacy policy](docs/PRIVACY.md) · [Watch the 35-second launch film](https://github.com/PeterShanxin/product-films/releases/tag/rct-launch-v1.1.0)
 
@@ -47,7 +49,7 @@ The Store edition requires Node.js 22.12 or later, the installed CLI, and a Desk
 3. Run it. It appears in the notification area and starts the agent.
 4. Right-click the icon and tick **Launch at sign-in**.
 
-There is no installer and no auto-updater in v0.1. To update, replace the `.exe`.
+The portable edition has no installer or auto-updater. To update it, replace the `.exe`.
 
 ### If you already run the Remote Device another way
 
@@ -173,7 +175,7 @@ or the next sign-in.
 Produces something like:
 
 ```
-Tray:           0.1.0
+Tray:           0.2.0
 OS:             Microsoft Windows NT 10.0.26100.0 (Arm64)
 State:          Online
 Agent:          running
@@ -258,7 +260,7 @@ The tray supports English and Simplified Chinese. Right-click the tray icon and 
 
 See [Contributing](CONTRIBUTING.md), [Coding standards](docs/CODING_STANDARDS.md), and the [Writing guide](docs/WRITING_GUIDE.md).
 
-## Not in v0.1
+## Out of scope
 
 No Desktop Commander GUI, file manager, terminal, MCP configuration editor, chat UI,
 account management, auto-updater or multi-device dashboard. macOS and Linux are not
