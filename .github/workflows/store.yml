@@ -1,6 +1,9 @@
 name: Store package
 on:
   pull_request:
+  push:
+    branches: [main]
+    paths: [Directory.Build.props]
   workflow_dispatch:
 permissions:
   contents: read
@@ -28,9 +31,19 @@ jobs:
         run: |
           python tools/generate-store-assets.py
           git diff --exit-code -- packaging/Assets
+      - name: Read Store package version
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$props = Get-Content -LiteralPath Directory.Build.props -Raw
+          $versions = @($props.SelectNodes('/Project/PropertyGroup/StorePackageVersion'))
+          if ($versions.Count -ne 1) { throw 'Set exactly one StorePackageVersion in Directory.Build.props.' }
+          $version = $versions[0].InnerText
+          if ($version -cnotmatch '^[1-9][0-9]*\.[0-9]+\.[0-9]+\.0$') { throw 'Invalid StorePackageVersion.' }
+          "value=$version" >> $env:GITHUB_OUTPUT
       - name: Build and validate package
         shell: pwsh
-        run: ./tools/build-store.ps1 -Architecture '${{ matrix.arch }}' -PackageVersion 1.0.0.0 -OutputDirectory artifacts/store
+        run: ./tools/build-store.ps1 -Architecture '${{ matrix.arch }}' -PackageVersion '${{ steps.version.outputs.value }}' -OutputDirectory artifacts/store
       - name: Save unsigned Store submission package
         uses: actions/upload-artifact@v4
         with:
@@ -43,4 +56,4 @@ jobs:
       - name: Install and launch x64 package on disposable runner
         if: matrix.arch == 'x64'
         shell: pwsh
-        run: ./tools/test-store-install.ps1 -PackagePath artifacts/store/RemoteCommanderTray_1.0.0.0_x64.msix
+        run: ./tools/test-store-install.ps1 -PackagePath artifacts/store/RemoteCommanderTray_${{ steps.version.outputs.value }}_x64.msix
