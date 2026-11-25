@@ -2,7 +2,7 @@
 
 <img src="packaging/Assets/ListingLogo.png" alt="Remote Commander Tray 应用图标" width="80" height="80">
 
-让 [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) 在后台运行，不用一直开着终端窗口。Windows 可在系统托盘查看连接状态和控制客户端；Linux Beta 则提供独立的服务控制窗口。
+让 [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) 在后台运行，不用一直开着终端窗口。Windows 版是个轻量的托盘工具，能查看连接状态、重启或停止客户端。Linux Beta 提供独立的服务控制窗口。
 
 **[Windows：从 Microsoft Store 安装](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Windows 便携版](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Linux Beta](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/download/v0.3.0/RemoteCommanderTray-linux-beta.tar.gz) · [Windows 迁移指南](docs/STORE.md) · [隐私政策](docs/PRIVACY.md)
 
