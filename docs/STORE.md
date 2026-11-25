@@ -6,11 +6,21 @@ is a draft, not a published or certified app.
 
 ## Build
 
-Install .NET SDK 8 and Windows SDK (MakeAppx), then run:
+When a Windows release should go to the Store, bump `StorePackageVersion` in
+`Directory.Build.props` above the version already published in Partner Center.
+Merging the version change to `main` runs **Store package** for x64 and ARM64.
+Rebuild the same revision via **Run workflow** if needed. Download `Store-x64`
+and `Store-arm64` from the successful run, check that both `build-info.json` files
+match the intended commit and version, then upload the unsigned MSIXs to Partner
+Center. The workflow builds and validates packages; it does not submit them.
+
+For a local build, install .NET SDK 8 and Windows SDK (MakeAppx), then run:
 
 ```powershell
-./tools/build-store.ps1 -Architecture x64 -PackageVersion 1.0.0.0 -OutputDirectory artifacts/store-x64
-./tools/build-store.ps1 -Architecture arm64 -PackageVersion 1.0.0.0 -OutputDirectory artifacts/store-arm64
+[xml]$props = Get-Content Directory.Build.props -Raw
+$version = $props.Project.PropertyGroup.StorePackageVersion
+./tools/build-store.ps1 -Architecture x64 -PackageVersion $version -OutputDirectory artifacts/store-x64
+./tools/build-store.ps1 -Architecture arm64 -PackageVersion $version -OutputDirectory artifacts/store-arm64
 ```
 
 Each output directory must be new. The script publishes a self-contained, untrimmed,
