@@ -2,7 +2,7 @@
 
 <img src="packaging/Assets/ListingLogo.png" alt="Remote Commander Tray app icon" width="80" height="80">
 
-Keep [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) running without leaving a terminal window open. Remote Commander Tray runs the official agent in the background on Windows and Linux. Windows shows connection status in the system tray; Linux Beta puts service controls in a desktop window.
+Keep [Desktop Commander Remote](https://github.com/wonderwhy-er/DesktopCommanderMCP) running without leaving a terminal window open. On Windows, a lightweight system tray app shows your connection status and lets you restart or stop the agent. Linux Beta provides a separate service control window.
 
 **[Windows: Install from Microsoft Store](https://apps.microsoft.com/detail/9PK9DMKPH68Q)** · [Windows portable](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/latest) · [Linux Beta](https://github.com/PeterShanxin/Remote-Commander-Tray/releases/download/v0.3.0/RemoteCommanderTray-linux-beta.tar.gz) · [Windows migration guide](docs/STORE.md) · [Privacy policy](docs/PRIVACY.md)
 
