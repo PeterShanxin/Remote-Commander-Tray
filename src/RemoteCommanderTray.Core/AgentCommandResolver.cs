@@ -76,8 +76,7 @@ public sealed class AgentCommandResolver
         }
 
         var node = FindNode();
-        var entryPoint = FindPackageEntryPoint();
-        if (node is not null && entryPoint is not null)
+        if (node is not null && FindPackageEntryPoint() is { } entryPoint)
         {
             var arguments = $"{Quote(entryPoint)} {suffix}";
             return new AgentResolution(
@@ -85,10 +84,16 @@ public sealed class AgentCommandResolver
                 null);
         }
 
-        var shim = FindOnPath("desktop-commander.cmd") ?? FindOnPath("desktop-commander.exe");
+        var shim = (node is not null ? FindOnPath("desktop-commander.cmd") : null)
+            ?? FindOnPath("desktop-commander.exe");
         if (shim is not null)
         {
             return new AgentResolution(WrapInCmd($"{Quote(shim)} {suffix}"), null);
+        }
+        if (node is null)
+        {
+            return new AgentResolution(null,
+                $"Node.js was not found. Install Node.js, then run \"npm install -g {PackageName}\".");
         }
 
         var npx = FindOnPath("npx.cmd") ?? FindOnPath("npx.exe");
@@ -147,7 +152,7 @@ public sealed class AgentCommandResolver
             }
         }
 
-        return null;
+        return FindOnPath(string.Join(DirectorySeparator, PackageRelativePath));
     }
 
     private string? FindOnPath(string fileName)

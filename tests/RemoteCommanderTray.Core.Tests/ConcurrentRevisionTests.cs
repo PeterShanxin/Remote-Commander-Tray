@@ -137,6 +137,90 @@ public sealed class ConcurrentRevisionTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task Cleanup_failure_blocks_logout_and_remains_visible_after_stop()
+    {
+        await _supervisor.StartAsync();
+        _factory.Latest.StopFailure = new IOException("synthetic drain failure");
+        await Assert.ThrowsAsync<IOException>(_supervisor.StopAsync);
+
+        await _supervisor.ReauthenticateAsync();
+        await _supervisor.StopAsync();
+
+        Assert.Empty(_factory.OneShotCommands);
+        Assert.Single(_factory.Created);
+        Assert.Equal(AgentState.Error, _supervisor.Snapshot.State);
+        Assert.Contains("cleanup", _supervisor.Snapshot.LastError);
+        Assert.False(_supervisor.Snapshot.AgentWanted);
+    }
+
+    [Fact]
+    public async Task Unconfirmed_logout_cleanup_blocks_restart_and_another_logout()
+    {
+        await _supervisor.StartAsync();
+        _factory.LogoutFailure = new AgentCleanupException(new IOException("synthetic incomplete drain"));
+        await _supervisor.ReauthenticateAsync();
+        await _supervisor.RestartAsync();
+        await _supervisor.ReauthenticateAsync();
+
+        Assert.Single(_factory.OneShotCommands);
+        Assert.Single(_factory.Created);
+        Assert.Equal(AgentState.Error, _supervisor.Snapshot.State);
+        Assert.False(_supervisor.Snapshot.AgentWanted);
+        Assert.Null(_supervisor.Snapshot.NextRestartUtc);
+    }
+
+    [Fact]
+    public async Task Quit_cancels_an_in_progress_logout_before_waiting_for_its_cleanup()
+    {
+        await _supervisor.StartAsync();
+        var logout = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _factory.LogoutGate = logout;
+        var reauthenticate = _supervisor.ReauthenticateAsync();
+        var quit = _supervisor.DisposeAsync().AsTask();
+        try
+        {
+            await quit.WaitAsync(TimeSpan.FromSeconds(3));
+            await reauthenticate;
+            Assert.Single(_factory.OneShotCommands);
+            Assert.Single(_factory.Created);
+            Assert.False(_supervisor.IsRunning);
+        }
+        finally
+        {
+            logout.TrySetResult();
+            await quit;
+        }
+    }
+
+    [Fact]
+    public async Task Restart_drops_online_while_waiting_for_the_old_generation_to_drain()
+    {
+        await _supervisor.StartAsync();
+        var old = _factory.Latest;
+        old.Emit("Device ready:");
+        var drain = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        old.StopGate = drain;
+
+        var restart = _supervisor.RestartAsync();
+        try
+        {
+            Assert.False(restart.IsCompleted);
+            Assert.Single(_factory.Created);
+            Assert.NotEqual(AgentState.Online, _supervisor.Snapshot.State);
+            Assert.True(_supervisor.Snapshot.ProcessRunning);
+        }
+        finally
+        {
+            drain.TrySetResult();
+            await restart;
+        }
+
+        Assert.True(old.HasExited);
+        Assert.Equal(2, _factory.CreatedCount);
+        Assert.Equal(AgentState.Starting, _supervisor.Snapshot.State);
+    }
+
+    [Fact]
     public async Task Factory_creation_failure_is_retried_without_losing_supervision()
     {
         _factory.CreateFailure = new IOException("synthetic creation failure");

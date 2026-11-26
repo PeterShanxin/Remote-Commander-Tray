@@ -58,6 +58,10 @@ public readonly record struct AgentCommandResult(int? ExitCode, string Output)
     public bool Succeeded => ExitCode == 0;
 }
 
+/// <summary>The one-shot process group could not be confirmed drained.</summary>
+public sealed class AgentCleanupException(Exception innerException)
+    : Exception("The agent process group could not be confirmed stopped.", innerException);
+
 /// <summary>Creates agent processes. Replaced by a fake in tests.</summary>
 public interface IAgentProcessFactory
 {

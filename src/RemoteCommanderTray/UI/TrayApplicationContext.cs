@@ -169,8 +169,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
         };
 
-        _supervisor.Changed += (_, snapshot) => OnUiThread(() => ApplySnapshot(snapshot));
-        _supervisor.Notification += (_, notification) => OnUiThread(() => ShowNotification(notification));
+        // A worker callback may be queued before a newer change renders on the UI thread.
+        _supervisor.Changed += (_, _) => OnUiThread(() => ApplySnapshot(_supervisor.Snapshot));
+        _supervisor.Notification += (_, notification) => OnUiThread(() =>
+        {
+            if (!_exiting) ShowNotification(notification);
+        });
 
         ApplySnapshot(_supervisor.Snapshot);
         if (!startedByWindows && settings.NotificationsEnabled)
@@ -242,7 +246,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private static string GlyphFor(AgentState state) => state switch
     {
         AgentState.Online => "✓",                 // check
-        AgentState.Connecting or AgentState.Starting => "…", // ellipsis
+        AgentState.Connecting or AgentState.Starting or AgentState.Stopping => "…", // ellipsis
         AgentState.AuthenticationRequired => "\U0001F511", // key
         AgentState.Error => "×",                  // multiplication sign
         _ => "⏸",                                 // pause
@@ -469,7 +473,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (Exception ex)
         {
             _supervisorDisposeFailureReported = true;
-            _log.Write(LogSource.Tray, $"Error during shutdown: {ex.Message}");
+            _log.Write(LogSource.Tray, $"Error during shutdown ({ex.GetType().Name}, HRESULT={ex.HResult:X8}).");
         }
 
         _log.Write(LogSource.Tray, "Tray exited.");
@@ -540,11 +544,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch (Exception ex)
         {
             _log.Write(LogSource.Tray, $"Command failed ({ex.GetType().Name}, HRESULT={ex.HResult:X8}).");
-            OnUiThread(() => MessageBox.Show(
-                _strings.Format(TextId.CommandFailed, ex.Message),
-                _strings.Get(TextId.ApplicationName),
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning));
+            OnUiThread(() =>
+            {
+                if (_exiting) return;
+                MessageBox.Show(
+                    _strings.Format(TextId.CommandFailed, ex.Message),
+                    _strings.Get(TextId.ApplicationName),
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            });
         }
         finally
         {
@@ -623,7 +631,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 if (!_supervisorDisposeFailureReported)
                 {
                     _supervisorDisposeFailureReported = true;
-                    _log.Write(LogSource.Tray, $"Error during shutdown disposal: {ex.Message}");
+                    _log.Write(LogSource.Tray, $"Error during shutdown disposal ({ex.GetType().Name}, HRESULT={ex.HResult:X8}).");
                 }
             }
 

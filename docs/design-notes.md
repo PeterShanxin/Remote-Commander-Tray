@@ -21,6 +21,9 @@ share a short callback lock. Delayed exits carry their source generation and rec
 identity after acquiring the semaphore. No process teardown runs under the callback
 lock. Register Starting and the process identity before Start can emit callbacks.
 Queued callbacks are observed, canceled or awaited during shutdown.
+The tray shows Stopping during process-group cleanup. The UI reads the current
+status when it handles a queued update so an older Online event cannot replace
+a newer stop.
 
 Each real process is created with PROC_THREAD_ATTRIBUTE_JOB_LIST and HANDLE_LIST:
 it is contained from its first instruction and inherits only its stdio handles, not
@@ -40,6 +43,8 @@ Ordinary network errors only change state; the official CLI owns channel recover
 Terminal session loss or an expired authorization prompt pauses for explicit user
 re-authentication with one actionable notice, rather than looping browser launches.
 A failed logout cannot be presented as successful sign-in or start a replacement.
+Exit cancels an active logout and waits for its process group to be cleaned up.
+If either group fails cleanup, the tray reports the error and blocks further launches.
 Notification clicks resolve the current prompt, not an old cached authorization URL.
 
 ## Logs and diagnostics

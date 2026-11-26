@@ -13,12 +13,13 @@ if (mode == "birth")
     Console.WriteLine($"inJob={inJob};console={GetConsoleWindow() != IntPtr.Zero}");
     return;
 }
-if (mode is "orphan" or "tree")
+if (mode is "orphan" or "tree" or "grandtree" or "branch")
 {
     var start = new ProcessStartInfo(Environment.ProcessPath!) { UseShellExecute = false, CreateNoWindow = true };
     // Tests launch via dotnet.exe, not an apphost. Keep the child in the same runtime.
     start.ArgumentList.Add(Assembly.GetExecutingAssembly().Location);
-    start.ArgumentList.Add("child");
+    start.ArgumentList.Add(mode == "grandtree" ? "branch" : "child");
+    if (mode == "grandtree") start.ArgumentList.Add(marker + ".grandchild");
     using var child = Process.Start(start)!;
     File.WriteAllText(marker!, child.Id.ToString());
     if (mode == "orphan") return;

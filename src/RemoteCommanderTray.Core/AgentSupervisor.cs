@@ -25,6 +25,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
     private readonly HashSet<Task> _background = [];
     private readonly Func<DateTimeOffset> _clock;
     private readonly Timer _healthTimer;
+    private readonly CancellationTokenSource _shutdown = new();
     private volatile IAgentProcess? _process;
     private CancellationTokenSource? _restartCts;
     private Task? _disposeTask;
@@ -77,7 +78,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_disposed) return;
+            if (_disposed || _cleanupFailed) return;
             CancelPendingRestart();
             WantAgent();
             ResetFailures();
@@ -91,7 +92,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_disposed) return;
+            if (_disposed || _cleanupFailed) return;
             _agentWanted = false;
             _machine.SetAgentWanted(false);
             CancelPendingRestart();
@@ -107,7 +108,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_disposed) return;
+            if (_disposed || _cleanupFailed) return;
             CancelPendingRestart();
             await StopCoreAsync().ConfigureAwait(false);
             WantAgent();
@@ -125,9 +126,10 @@ public sealed class AgentSupervisor : IAsyncDisposable
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_disposed) return;
+            if (_disposed || _cleanupFailed) return;
             CancelPendingRestart();
             await StopCoreAsync().ConfigureAwait(false);
+            if (_disposed) return;
 
             // Logout can take up to 30 seconds. Publish the teardown now: leaving the
             // previous generation's snapshot in place would keep showing Online while no
@@ -140,8 +142,17 @@ public sealed class AgentSupervisor : IAsyncDisposable
             AgentCommandResult result;
             try
             {
-                result = await _factory.RunOnceAsync(resolution.Spec, TimeSpan.FromSeconds(30))
+                result = await _factory.RunOnceAsync(resolution.Spec, TimeSpan.FromSeconds(30), _shutdown.Token)
                     .ConfigureAwait(false);
+            }
+            catch (AgentCleanupException)
+            {
+                ReportCleanupFailure();
+                return;
+            }
+            catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+            {
+                return;
             }
             catch (Exception ex)
             {
@@ -149,6 +160,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 _machine.OnSessionLost("Sign-out failed. Retry Re-authenticate.");
                 return;
             }
+            if (_disposed) return;
 
             var logoutParser = new AgentOutputParser();
             foreach (var line in result.Output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
@@ -191,12 +203,7 @@ public sealed class AgentSupervisor : IAsyncDisposable
     // already died and its exit callback is still waiting for this same semaphore.
     private async Task StartCoreAsync(bool authenticationAlreadyNotified = false)
     {
-        if (_disposed || IsRunning) return;
-        if (_cleanupFailed)
-        {
-            ReportUnavailable("Previous agent cleanup failed. Exit the tray before trying again.");
-            return;
-        }
+        if (_disposed || _cleanupFailed || IsRunning) return;
         await StopCoreAsync().ConfigureAwait(false);
         IAgentProcess? process = null;
         try
@@ -250,22 +257,31 @@ public sealed class AgentSupervisor : IAsyncDisposable
         if (process is null) return;
         try
         {
-            try { await process.StopAsync(StopGracePeriod).ConfigureAwait(false); }
+            try
+            {
+                _machine.OnProcessStopping(!process.HasExited);
+                await process.StopAsync(StopGracePeriod).ConfigureAwait(false);
+            }
             finally { process.Dispose(); }
         }
         catch
         {
-            _cleanupFailed = true;
-            _agentWanted = false;
-            _machine.SetAgentWanted(false);
-            CancelPendingRestart();
-            _machine.OnCleanupFailed();
-            Raise(new TrayNotification(NotificationKind.StartFailure,
-                "Remote Commander - cleanup failed",
-                "The prior agent could not be fully cleaned up. No replacement will be started. Exit the tray.")
-                { MessageId = NotificationMessageId.CleanupFailed });
+            ReportCleanupFailure();
             throw;
         }
+    }
+
+    private void ReportCleanupFailure()
+    {
+        _cleanupFailed = true;
+        _agentWanted = false;
+        CancelPendingRestart();
+        _machine.OnCleanupFailed();
+        _log.Write(LogSource.Tray, "Agent process group cleanup was not confirmed.");
+        Raise(new TrayNotification(NotificationKind.StartFailure,
+            "Remote Commander - cleanup failed",
+            "The prior agent could not be fully cleaned up. No replacement will be started. Exit the tray.")
+            { MessageId = NotificationMessageId.CleanupFailed });
     }
 
     private void HandleOutput(object? sender, AgentOutputLine line)
@@ -415,23 +431,25 @@ public sealed class AgentSupervisor : IAsyncDisposable
         if (_disposed || !_mutex.Wait(0)) return;
         try
         {
-            if (_disposed) return;
-            var snapshot = Snapshot;
-            if (snapshot.State == AgentState.Online)
+            lock (_callbackGate)
             {
-                _stallNotified = false;
-                if (_clock() - snapshot.StateSinceUtc >= TimeSpan.FromSeconds(_settings().HealthyRunSeconds)) ResetFailures();
-                return;
+                if (_disposed) return;
+                var snapshot = Snapshot;
+                if (snapshot.State == AgentState.Online)
+                {
+                    if (_clock() - snapshot.StateSinceUtc >= TimeSpan.FromSeconds(_settings().HealthyRunSeconds)) ResetFailures();
+                    return;
+                }
+                if (!_agentWanted || !snapshot.ProcessRunning || _stallNotified ||
+                    snapshot.State is not (AgentState.Connecting or AgentState.Starting)) return;
+                var elapsed = _clock() - snapshot.StateSinceUtc;
+                if (elapsed < TimeSpan.FromMinutes(_settings().StalledConnectionMinutes)) return;
+                _stallNotified = true;
+                _machine.OnConnectionStalled(elapsed);
+                Raise(new TrayNotification(NotificationKind.ConnectionStalled, "Remote Commander - not connected",
+                    "The device has not come online. Try Restart connection, or Re-authenticate if sign-in expired.")
+                    { MessageId = NotificationMessageId.ConnectionStalled });
             }
-            if (!_agentWanted || !snapshot.ProcessRunning || _stallNotified ||
-                snapshot.State is not (AgentState.Connecting or AgentState.Starting)) return;
-            var elapsed = _clock() - snapshot.StateSinceUtc;
-            if (elapsed < TimeSpan.FromMinutes(_settings().StalledConnectionMinutes)) return;
-            _stallNotified = true;
-            _machine.OnConnectionStalled(elapsed);
-            Raise(new TrayNotification(NotificationKind.ConnectionStalled, "Remote Commander - not connected",
-                "The device has not come online. Try Restart connection, or Re-authenticate if sign-in expired.")
-                { MessageId = NotificationMessageId.ConnectionStalled });
         }
         finally { _mutex.Release(); }
     }
@@ -449,7 +467,11 @@ public sealed class AgentSupervisor : IAsyncDisposable
                     snapshot.VerificationUri)
                     { MessageId = NotificationMessageId.SignInRequired });
             }
-            else if (snapshot.State == AgentState.Online) _authNotified = false;
+            else if (snapshot.State == AgentState.Online)
+            {
+                _authNotified = false;
+                _stallNotified = false;
+            }
             Changed?.Invoke(this, snapshot);
         }
     }
@@ -468,10 +490,11 @@ public sealed class AgentSupervisor : IAsyncDisposable
 
     private void ReportUnavailable(string? problem)
     {
-        _machine.OnProcessExited(null, userRequested: false);
+        var message = problem ?? "Desktop Commander could not be found.";
+        _machine.OnLaunchUnavailable(message);
         _log.Write(LogSource.Tray, "Agent launch unavailable. Check installation and configuration.");
         Raise(new TrayNotification(NotificationKind.AgentUnavailable, "Remote Commander - agent unavailable",
-            problem ?? "Desktop Commander could not be found.")
+            message)
             { MessageId = NotificationMessageId.AgentUnavailable });
     }
 
@@ -491,6 +514,9 @@ public sealed class AgentSupervisor : IAsyncDisposable
 
     private async Task DisposeCoreAsync()
     {
+        // Logout owns the lifecycle semaphore. Cancel before waiting for it to release
+        // the semaphore so Quit can drain the active one-shot promptly.
+        _shutdown.Cancel();
         await _healthTimer.DisposeAsync().ConfigureAwait(false);
         await _mutex.WaitAsync().ConfigureAwait(false);
         try
@@ -498,12 +524,21 @@ public sealed class AgentSupervisor : IAsyncDisposable
             _agentWanted = false;
             CancelPendingRestart();
             await StopCoreAsync().ConfigureAwait(false);
+            if (!_cleanupFailed)
+            {
+                _machine.SetAgentWanted(false);
+                _machine.OnProcessExited(null, userRequested: true);
+            }
         }
-        finally { _mutex.Release(); }
-        Task[] pending;
-        lock (_backgroundGate) { pending = [.. _background]; }
-        await Task.WhenAll(pending).ConfigureAwait(false);
-        _machine.Changed -= OnMachineChanged;
+        finally
+        {
+            _mutex.Release();
+            Task[] pending;
+            lock (_backgroundGate) { pending = [.. _background]; }
+            await Task.WhenAll(pending).ConfigureAwait(false);
+            _machine.Changed -= OnMachineChanged;
+            _shutdown.Dispose();
+        }
         // SemaphoreSlim never allocates an OS handle here. Leave it usable for a public
         // command already queued before disposal; its disposed guard will make it inert.
     }

@@ -59,12 +59,14 @@ internal sealed class FakeAgentProcess : IAgentProcess
 
     public Exception? StopFailure { get; set; }
 
-    public Task StopAsync(TimeSpan gracePeriod, CancellationToken cancellationToken = default)
+    public TaskCompletionSource? StopGate { get; set; }
+
+    public async Task StopAsync(TimeSpan gracePeriod, CancellationToken cancellationToken = default)
     {
-        if (StopFailure is not null) return Task.FromException(StopFailure);
+        if (StopFailure is not null) throw StopFailure;
         StopRequested = true;
+        if (StopGate is { } gate) await gate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
         Volatile.Write(ref _exited, 1);
-        return Task.CompletedTask;
     }
 
     /// <summary>Pushes a line of output as the real child would.</summary>
@@ -147,7 +149,7 @@ internal sealed class FakeAgentProcessFactory : IAgentProcessFactory
 
         async Task<AgentCommandResult> AwaitGateAsync()
         {
-            await LogoutGate.Task.ConfigureAwait(false);
+            await LogoutGate.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
             return LogoutResult;
         }
     }

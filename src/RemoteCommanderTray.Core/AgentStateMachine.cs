@@ -68,6 +68,15 @@ public sealed class AgentStateMachine
         });
     }
 
+    /// <summary>Stop showing the connection or its sign-in prompt during group teardown.</summary>
+    public void OnProcessStopping(bool rootRunning)
+        => Update(s => Transition(s with
+        {
+            ProcessRunning = rootRunning,
+            VerificationUri = null,
+            UserCode = null,
+        }, AgentState.Stopping));
+
     /// <summary>The child process is gone.</summary>
     /// <param name="exitCode">Process exit code, when one is available.</param>
     /// <param name="userRequested">True when the tray asked it to stop.</param>
@@ -100,6 +109,18 @@ public sealed class AgentStateMachine
     /// <summary>The supervisor has queued a restart attempt.</summary>
     public void OnRestartScheduled(int attempt, DateTimeOffset whenUtc)
         => Update(s => s with { RestartCount = attempt, NextRestartUtc = whenUtc });
+
+    /// <summary>Resolution failed before a replacement process could be created.</summary>
+    public void OnLaunchUnavailable(string reason)
+        => Update(s => Transition(s with
+        {
+            ProcessRunning = false,
+            RequiresReauthentication = false,
+            VerificationUri = null,
+            UserCode = null,
+            NextRestartUtc = null,
+            LastError = reason,
+        }, AgentState.Error));
 
     /// <summary>The supervisor gave up waiting for a reconnect that never completed.</summary>
     public void OnConnectionStalled(TimeSpan elapsed)
@@ -135,9 +156,9 @@ public sealed class AgentStateMachine
     public void ClearPendingRestart()
         => Update(s => s with { NextRestartUtc = null });
 
-    /// <summary>Counts a completed restart for diagnostics.</summary>
+    /// <summary>Counts a restart attempt that left the queue.</summary>
     public void OnRestartPerformed()
-        => Update(s => s with { TotalRestartCount = s.TotalRestartCount + 1 });
+        => Update(s => s with { TotalRestartCount = s.TotalRestartCount + 1, NextRestartUtc = null });
 
     /// <summary>Applies one parsed line of agent output.</summary>
     public void Apply(AgentSignal signal)

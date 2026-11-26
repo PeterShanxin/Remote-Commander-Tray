@@ -8,6 +8,44 @@ namespace RemoteCommanderTray.Windows.Tests;
 
 public sealed class TrayTests
 {
+    [Fact]
+    public async Task Queued_online_status_cannot_overwrite_a_newer_stop_on_the_tray()
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            var root = Path.Combine(Path.GetTempPath(), "rct-tray-status-" + Guid.NewGuid());
+            try
+            {
+                var paths = new AppPaths(root);
+                paths.EnsureCreated();
+                var settings = new TraySettings { StartAgentOnLaunch = false, NotificationsEnabled = false, Language = "en" };
+                using var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
+                using var tray = new TrayApplicationContext(paths, settings, log, "test", startedByWindows: true);
+                var supervisor = Field<AgentSupervisor>(tray, "_supervisor");
+                var machine = Field<AgentStateMachine>(supervisor, "_machine");
+                var icon = Field<NotifyIcon>(tray, "_notifyIcon");
+                Task.Run(() =>
+                {
+                    machine.OnProcessStarted();
+                    machine.Apply(new AgentSignal(AgentSignalKind.DeviceReady));
+                }).GetAwaiter().GetResult();
+
+                // Stop renders directly on the UI thread before the queued Online callback runs.
+                machine.OnProcessExited(null, userRequested: true);
+                Assert.Contains("Stopped", icon.Text);
+                Application.DoEvents();
+                Assert.Contains("Stopped", icon.Text);
+                done.TrySetResult();
+            }
+            catch (Exception ex) { done.TrySetException(ex); }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(20));
+    }
+
     [Fact] public async Task Real_tray_controls_manage_only_synthetic_agents()
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -46,7 +84,10 @@ public sealed class TrayTests
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
         await done.Task.WaitAsync(TimeSpan.FromSeconds(40));
     }
-    [Fact] public async Task Dispose_does_not_rethrow_a_shutdown_failure_already_handled()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Shutdown_failures_are_reported_without_logging_raw_exception_text(bool exitFromMenu)
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
@@ -60,15 +101,20 @@ public sealed class TrayTests
                 var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
                 tray = new TrayApplicationContext(paths, settings, log, "test", startedByWindows: true);
 
-                // Dispose the real supervisor first, then model the same cached fault
-                // ShutdownAsync has already caught before ExitThread triggers Dispose.
+                // Dispose the real supervisor first, then inject a failed cleanup into
+                // the normal Exit or Dispose path.
+                const string privateOutput = "synthetic-private-output-marker";
                 Field<AgentSupervisor>(tray, "_supervisor").DisposeAsync().AsTask().GetAwaiter().GetResult();
-                SetField(tray, "_supervisorDisposeTask", Task.FromException(new IOException("synthetic cleanup failure")));
-                SetField(tray, "_supervisorDisposeFailureReported", true);
+                SetField(tray, "_supervisorDisposeTask", Task.FromException(new IOException(privateOutput)));
+                if (exitFromMenu)
+                    typeof(TrayApplicationContext).GetMethod("ExitApplication", BindingFlags.Instance | BindingFlags.NonPublic)!
+                        .Invoke(tray, null);
 
                 var error = Record.Exception(tray.Dispose);
                 tray = null;
                 Assert.Null(error);
+                Assert.Contains(log.Tail(10), line => line.Contains("IOException", StringComparison.Ordinal));
+                Assert.DoesNotContain(log.Tail(10), line => line.Contains(privateOutput, StringComparison.Ordinal));
                 done.TrySetResult();
             }
             catch (Exception ex) { done.TrySetException(ex); }
