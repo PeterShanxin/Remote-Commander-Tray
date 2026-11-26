@@ -47,7 +47,7 @@ public sealed class AgentStateMachine
     {
         lock (_gate)
         {
-            _onlineReportPredatesSleep = _snapshot.State == AgentState.Online;
+            _onlineReportPredatesSleep = _snapshot.State is AgentState.Online or AgentState.Unconfirmed;
         }
     }
 
@@ -57,11 +57,17 @@ public sealed class AgentStateMachine
         {
             var hadOnlineReport = _onlineReportPredatesSleep;
             _onlineReportPredatesSleep = false;
-            return hadOnlineReport && s.State == AgentState.Online && s.AgentWanted && s.ProcessRunning
-                ? Transition(s, AgentState.Unconfirmed)
-                : s;
+            if (!hadOnlineReport || !s.AgentWanted || !s.ProcessRunning) return s;
+            // A second sleep during the grace period starts a full window at the new wake.
+            return s.State is AgentState.Online or AgentState.Unconfirmed
+                ? s with { State = AgentState.Unconfirmed, StateSinceUtc = _clock() } : s;
         });
     }
+
+    internal void RestoreOnlineAfterQuietWake(TimeSpan grace)
+        => Update(s => s.State == AgentState.Unconfirmed && !_onlineReportPredatesSleep &&
+            s.AgentWanted && s.ProcessRunning && _clock() - s.StateSinceUtc >= grace
+            ? Transition(s, AgentState.Online) : s);
 
     /// <summary>A child process has just been launched.</summary>
     public void OnProcessStarted()

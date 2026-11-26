@@ -60,7 +60,7 @@ public class AgentSupervisorTests : IDisposable
         machine.OnSystemResumed();
         health.Invoke(supervisor, null);
         Assert.Equal(0, backoff.Attempt);
-        now = now.AddDays(1);
+        now = now.AddSeconds(179);
         health.Invoke(supervisor, null);
         Assert.Equal(AgentState.Unconfirmed, supervisor.Snapshot.State);
         Assert.Null(supervisor.Snapshot.NextRestartUtc);
@@ -71,6 +71,7 @@ public class AgentSupervisorTests : IDisposable
         Assert.Empty(notices);
 
         agent.Emit("Channel closed", isError: true);
+        now = now.AddSeconds(1); // The original wake deadline can no longer restore Online.
         health.Invoke(supervisor, null);
         Assert.Equal(AgentState.Connecting, supervisor.Snapshot.State);
         Assert.Empty(notices);

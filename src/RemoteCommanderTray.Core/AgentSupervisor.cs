@@ -437,7 +437,10 @@ public sealed class AgentSupervisor : IAsyncDisposable
                 var snapshot = Snapshot;
                 if (snapshot.State is AgentState.Online or AgentState.Unconfirmed)
                 {
-                    if (_clock() - snapshot.OnlineSinceUtc >= TimeSpan.FromSeconds(_settings().HealthyRunSeconds)) ResetFailures();
+                    var settings = _settings();
+                    if (_clock() - snapshot.OnlineSinceUtc >= TimeSpan.FromSeconds(settings.HealthyRunSeconds)) ResetFailures();
+                    if (snapshot.State == AgentState.Unconfirmed && IsRunning)
+                        _machine.RestoreOnlineAfterQuietWake(TimeSpan.FromSeconds(settings.WakeGraceSeconds));
                     return;
                 }
                 if (!_agentWanted || !snapshot.ProcessRunning || _stallNotified ||

@@ -41,6 +41,10 @@ public sealed class TraySettings
     [JsonPropertyName("healthyRunSeconds")]
     public int HealthyRunSeconds { get; set; } = 60;
 
+    /// <summary>Time to wait for a connection status after wake before showing Online again.</summary>
+    [JsonPropertyName("wakeGraceSeconds")]
+    public int WakeGraceSeconds { get; set; } = 180;
+
     /// <summary>Rotate <c>agent.log</c> once it passes this size.</summary>
     [JsonPropertyName("logMaxBytes")]
     public long LogMaxBytes { get; set; } = 1024 * 1024;
@@ -76,6 +80,7 @@ public sealed class TraySettings
         StalledConnectionMinutes = Math.Clamp(StalledConnectionMinutes, 1, 120);
         StartFailureAlertThreshold = Math.Clamp(StartFailureAlertThreshold, 1, 20);
         HealthyRunSeconds = Math.Clamp(HealthyRunSeconds, 5, 3600);
+        WakeGraceSeconds = Math.Max(90, WakeGraceSeconds); // Allow the CLI's 75s heartbeat timeout and 10s check.
         LogMaxBytes = Math.Clamp(LogMaxBytes, 64 * 1024, 64L * 1024 * 1024);
         LogRetainedFiles = Math.Clamp(LogRetainedFiles, 0, 20);
 
