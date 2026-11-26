@@ -36,6 +36,9 @@ internal sealed class WindowsAgentProcess : IAgentProcess
     internal uint ActiveProcessCount => _job.ActiveProcessCount;
 
     public void Start()
+        => Start(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+
+    internal void Start(string profileDirectory)
     {
         ObjectDisposedException.ThrowIf(_disposed != 0, this);
         if (_started) throw new InvalidOperationException("A process generation can only be started once.");
@@ -58,9 +61,12 @@ internal sealed class WindowsAgentProcess : IAgentProcess
             },
             Attributes = attributes.Pointer,
         };
+        // Windows returns an empty string when it cannot resolve the profile folder.
+        // CreateProcessW requires null to inherit the current directory in that case.
+        var workingDirectory = string.IsNullOrEmpty(profileDirectory) ? null : profileDirectory;
         if (!NativeMethods.CreateProcessW(executable, new StringBuilder($"\"{executable}\" {_spec.Arguments}"),
             IntPtr.Zero, IntPtr.Zero, true, NativeMethods.CreateNoWindow | NativeMethods.ExtendedStartupInfoPresent,
-            IntPtr.Zero, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ref startup, out var info))
+            IntPtr.Zero, workingDirectory, ref startup, out var info))
             throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not create the contained agent process.");
 
         _handle = new SafeKernelHandle(info.Process);

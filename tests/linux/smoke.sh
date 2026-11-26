@@ -32,7 +32,8 @@ node --version >/dev/null
 printf '%s\n' "$$" >> "$root/agent-pids"
 sleep 300 &
 printf '%s\n' "$!" >> "$root/child-pids"
-echo 'synthetic-pairing-marker-never-log'
+echo 'synthetic-stdout-marker-never-log'
+echo 'synthetic-stderr-marker-never-log' >&2
 wait
 FAKE
 chmod +x "$fixture"/{desktop-commander,node}
@@ -60,16 +61,26 @@ old_child="$(tail -n 1 "$fixture/child-pids")"
 kill -KILL "$old_agent"
 wait_for_children 2
 # A supervised restart cleans up the old cgroup before the next generation starts.
-! kill -0 "$old_child" 2>/dev/null
+if kill -0 "$old_child" 2>/dev/null; then
+  echo "The previous generation's child survived crash recovery." >&2
+  exit 1
+fi
 "$installed" restart
 wait_for_children 3
 child="$(tail -n 1 "$fixture/child-pids")"
 "$installed" stop
-! kill -0 "$child" 2>/dev/null
+if kill -0 "$child" 2>/dev/null; then
+  echo "The managed child survived Stop." >&2
+  exit 1
+fi
 [[ "$("$installed" status)" == 'Stopped | Start with user session: on' ]]
 "$installed" disable
 [[ "$("$installed" status)" == 'Stopped | Start with user session: off' ]]
-! journalctl --user -u "$unit" --no-pager | grep -F 'synthetic-pairing-marker-never-log'
+journal="$(journalctl --user -u "$unit" --no-pager)"
+if grep -Eq 'synthetic-(stdout|stderr)-marker-never-log' <<<"$journal"; then
+  echo "Raw synthetic agent output reached the service journal." >&2
+  exit 1
+fi
 
 # Launch via the generated desktop entry and check the live X11 window, not a mock API.
 xvfb-run -a bash -c '

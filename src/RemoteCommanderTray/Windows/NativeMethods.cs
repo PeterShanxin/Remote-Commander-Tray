@@ -53,7 +53,7 @@ internal static class NativeMethods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool CreateProcessW(string application, StringBuilder commandLine,
         IntPtr processAttributes, IntPtr threadAttributes, [MarshalAs(UnmanagedType.Bool)] bool inheritHandles,
-        uint creationFlags, IntPtr environment, string workingDirectory,
+        uint creationFlags, IntPtr environment, string? workingDirectory,
         ref StartupInfoEx startupInfo, out ProcessInformation processInformation);
 
     [DllImport("kernel32.dll", SetLastError = true)]

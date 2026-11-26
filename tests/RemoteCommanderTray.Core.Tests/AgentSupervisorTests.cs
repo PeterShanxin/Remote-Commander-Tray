@@ -99,6 +99,74 @@ public class AgentSupervisorTests : IDisposable
     }
 
     [Fact]
+    public async Task A_second_stall_after_brief_recovery_warns_even_between_health_checks()
+    {
+        var now = new DateTimeOffset(2026, 11, 26, 1, 0, 0, TimeSpan.Zero);
+        var machine = new AgentStateMachine(() => now);
+        await using var supervisor = new AgentSupervisor(machine, _factory,
+            new AgentCommandResolver(new InstalledAgentEnvironment()), () => _settings, _log, clock: () => now);
+        var notices = new List<TrayNotification>();
+        supervisor.Notification += (_, notice) => notices.Add(notice);
+        var health = typeof(AgentSupervisor).GetMethod("RunHealthCheck", BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        await supervisor.StartAsync();
+        now = now.AddMinutes(_settings.StalledConnectionMinutes);
+        health.Invoke(supervisor, null);
+        Assert.Equal(AgentState.Error, supervisor.Snapshot.State);
+        Assert.Single(notices, notice => notice.Kind == NotificationKind.ConnectionStalled);
+
+        _factory.Latest.Emit("Device ready:");
+        Assert.Equal(AgentState.Online, supervisor.Snapshot.State);
+        _factory.Latest.Emit("Device marked as offline");
+        now = now.AddMinutes(_settings.StalledConnectionMinutes);
+        health.Invoke(supervisor, null);
+        health.Invoke(supervisor, null);
+
+        Assert.Equal(AgentState.Error, supervisor.Snapshot.State);
+        Assert.Equal(2, notices.Count(notice => notice.Kind == NotificationKind.ConnectionStalled));
+        Assert.True(supervisor.IsRunning);
+        Assert.Single(_factory.Created);
+    }
+
+    [Fact]
+    public async Task Consecutive_crashes_follow_each_delay_and_a_long_run_resets_the_streak()
+    {
+        var now = new DateTimeOffset(2026, 11, 26, 1, 0, 0, TimeSpan.Zero);
+        TimeSpan[] delays = [TimeSpan.FromMilliseconds(50), TimeSpan.FromMilliseconds(80),
+            TimeSpan.FromMilliseconds(120), TimeSpan.FromMilliseconds(160)];
+        await using var supervisor = new AgentSupervisor(new AgentStateMachine(() => now), _factory,
+            new AgentCommandResolver(new InstalledAgentEnvironment()), () => _settings, _log,
+            clock: () => now, backoff: new RestartBackoff(delays));
+        var scheduled = System.Threading.Channels.Channel.CreateUnbounded<AgentSnapshot>();
+        DateTimeOffset? previousDeadline = null;
+        supervisor.Changed += (_, snapshot) =>
+        {
+            if (snapshot.NextRestartUtc is not null && snapshot.NextRestartUtc != previousDeadline)
+                scheduled.Writer.TryWrite(snapshot);
+            previousDeadline = snapshot.NextRestartUtc;
+        };
+        _factory.NextExitDuringStart = 7;
+        await supervisor.StartAsync();
+
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            var snapshot = await scheduled.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(attempt, snapshot.RestartCount);
+            Assert.Equal(now + delays[Math.Min(attempt - 1, delays.Length - 1)], snapshot.NextRestartUtc);
+            await WaitUntil(() => _factory.CreatedCount == attempt + 1 && _factory.Latest.Started);
+            if (attempt < 5) _factory.Latest.Crash();
+        }
+
+        await WaitUntil(() => !supervisor.Snapshot.NextRestartUtc.HasValue);
+        now = now.AddSeconds(_settings.HealthyRunSeconds);
+        _factory.Latest.Crash();
+        var reset = await scheduled.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, reset.RestartCount);
+        Assert.Equal(now + delays[0], reset.NextRestartUtc);
+        Assert.Equal(5, reset.TotalRestartCount);
+    }
+
+    [Fact]
     public async Task Timestamped_tool_content_cannot_claim_online_or_reach_logs()
     {
         await _supervisor.StartAsync();
@@ -289,6 +357,61 @@ public class AgentSupervisorTests : IDisposable
 
         Assert.Contains(notifications, n => n.Kind == NotificationKind.AgentUnavailable);
         Assert.False(supervisor.IsRunning);
+    }
+
+    [Fact]
+    public async Task Stop_restart_and_quit_each_cancel_an_unexpired_crash_retry()
+    {
+        var retryDelay = TimeSpan.FromMilliseconds(500);
+        foreach (var action in new[] { "stop", "restart", "quit" })
+        {
+            var factory = new FakeAgentProcessFactory();
+            await using var supervisor = new AgentSupervisor(new(), factory,
+                new AgentCommandResolver(new InstalledAgentEnvironment()), () => _settings, _log,
+                backoff: new RestartBackoff([retryDelay]));
+            await supervisor.StartAsync();
+            factory.Latest.Crash();
+            await WaitUntil(() => supervisor.Snapshot.NextRestartUtc.HasValue);
+
+            switch (action)
+            {
+                case "stop": await supervisor.StopAsync(); break;
+                case "restart": await supervisor.RestartAsync(); break;
+                case "quit": await supervisor.DisposeAsync(); break;
+            }
+
+            await Task.Delay(retryDelay + TimeSpan.FromMilliseconds(150));
+            Assert.Null(supervisor.Snapshot.NextRestartUtc);
+            Assert.Equal(action == "restart" ? 2 : 1, factory.CreatedCount);
+            Assert.Equal(action == "restart", supervisor.IsRunning);
+        }
+    }
+
+    [Fact]
+    public async Task Missing_dependency_at_retry_does_not_leave_a_countdown()
+    {
+        var environment = new AgentCommandResolverTests.FakeEnvironment
+        {
+            Variables = { ["PATH"] = @"C:\Tools" },
+            Files = { @"C:\Tools\node.exe", @"C:\Tools\desktop-commander.cmd" },
+        };
+        await using var supervisor = new AgentSupervisor(new(), _factory, new(environment),
+            () => _settings, _log, backoff: new RestartBackoff([TimeSpan.FromMilliseconds(20)]));
+        var notice = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        supervisor.Notification += (_, notification) =>
+        {
+            if (notification.Kind == NotificationKind.AgentUnavailable) notice.TrySetResult();
+        };
+
+        await supervisor.StartAsync();
+        environment.Files.Clear();
+        _factory.Latest.Crash();
+        await notice.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Single(_factory.Created);
+        Assert.Null(supervisor.Snapshot.NextRestartUtc);
+        Assert.Equal(AgentState.Error, supervisor.Snapshot.State);
+        Assert.Contains("Node.js", supervisor.Snapshot.LastError);
     }
 
     [Fact]

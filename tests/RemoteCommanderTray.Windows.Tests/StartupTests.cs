@@ -13,7 +13,7 @@ public sealed class StartupTests
         try
         {
             Assert.Equal(StartupState.NotRegistered, StartupRegistration.GetState(run, approval, name));
-            Assert.True(StartupRegistration.TrySet(true, @"C:\test path\tray.exe", run, name, out _));
+            Assert.True(StartupRegistration.TrySet(true, @"C:\test path\tray.exe", run, name, out var error), error);
             Assert.Equal(StartupState.Enabled, StartupRegistration.GetState(run, approval, name));
             using var key = Registry.CurrentUser.CreateSubKey(approval);
             byte[] disabled = [3, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8];

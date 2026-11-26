@@ -78,6 +78,7 @@ npm install -g @wonderwhy-er/desktop-commander
 | --- | --- | --- |
 | 对勾 | Online | 设备已注册并标记为 online |
 | 三点 | Connecting / Reconnecting | 正在启动，或正在重建断开的 channel |
+| 三点 | Stopping | 正在清理当前进程组 |
 | 钥匙 | Authentication required | 登录尚未完成，或会话已失效需要重新认证 |
 | 叉 | Offline / Error | Agent 启动失败、退出，或长时间卡住 |
 | 暂停 | Stopped | 你手动停止了 agent |

@@ -147,15 +147,14 @@ def gui():
     actions = ttk.Frame(content, padding=(0, 16, 0, 0))
     actions.grid(sticky="w")
     updates = queue.Queue()
+    buttons = []
     busy = False
+    command_in_progress = False
+    pending_command = None
 
     def execute(command=None):
         nonlocal busy
-        if busy:
-            return
         busy = True
-        if command:
-            label.set("Updating service…")
 
         def worker():
             try:
@@ -167,26 +166,51 @@ def gui():
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def request(command):
+        nonlocal command_in_progress, pending_command
+        if command_in_progress:
+            return
+        command_in_progress = True
+        label.set("Updating service…")
+        for button in buttons:
+            button.state(["disabled"])
+        if busy:
+            # A refresh already in flight must not swallow a user's click.
+            pending_command = command
+        else:
+            execute(command)
+
     def poll():
-        nonlocal busy
+        nonlocal busy, command_in_progress, pending_command
         try:
             state, error = updates.get_nowait()
         except queue.Empty:
             pass
         else:
-            busy = False
-            label.set(state)
-            if error:
-                messagebox.showerror("Remote Commander Tray", error, parent=window)
+            if pending_command is not None:
+                command, pending_command = pending_command, None
+                execute(command)
+            else:
+                busy = False
+                label.set(state)
+                if command_in_progress:
+                    command_in_progress = False
+                    for button in buttons:
+                        button.state(["!disabled"])
+                if error:
+                    messagebox.showerror("Remote Commander Tray", error, parent=window)
         window.after(100, poll)
 
     def refresh():
-        execute()
+        if not busy:
+            execute()
         window.after(3000, refresh)
 
     for title, action in (("Start", "start"), ("Stop", "stop"), ("Restart", "restart"),
                           ("Enable startup", "enable"), ("Disable startup", "disable")):
-        ttk.Button(actions, text=title, command=lambda value=action: execute(value)).pack(side="left", padx=(0, 6))
+        button = ttk.Button(actions, text=title, command=lambda value=action: request(value))
+        button.pack(side="left", padx=(0, 6))
+        buttons.append(button)
     window.after(0, refresh)
     window.after(100, poll)
     window.mainloop()

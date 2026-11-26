@@ -14,7 +14,21 @@ internal sealed class WindowsAgentProcessFactory : IAgentProcessFactory
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        using var process = new WindowsAgentProcess(spec);
+        var process = new WindowsAgentProcess(spec);
+        try
+        {
+            return await RunOnceAsync(process, timeout, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            try { process.Dispose(); }
+            catch (Exception ex) { throw new AgentCleanupException(ex); }
+        }
+    }
+
+    private static async Task<AgentCommandResult> RunOnceAsync(
+        WindowsAgentProcess process, TimeSpan timeout, CancellationToken cancellationToken)
+    {
         var output = new StringBuilder();
         var gate = new object();
         process.OutputReceived += (_, line) =>

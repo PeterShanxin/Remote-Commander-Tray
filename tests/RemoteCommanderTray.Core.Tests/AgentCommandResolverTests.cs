@@ -51,10 +51,10 @@ public class AgentCommandResolverTests
         {
             Variables =
             {
-                ["PATH"] = @"C:\Users\peter\AppData\Roaming\npm",
+                ["PATH"] = @"C:\Users\peter\AppData\Roaming\npm;C:\Program Files\nodejs",
                 ["ComSpec"] = @"C:\Windows\System32\cmd.exe",
             },
-            Files = { @"C:\Users\peter\AppData\Roaming\npm\desktop-commander.cmd", @"C:\Windows\System32\cmd.exe" },
+            Files = { NodeExe, @"C:\Users\peter\AppData\Roaming\npm\desktop-commander.cmd", @"C:\Windows\System32\cmd.exe" },
         };
 
         var resolution = new AgentCommandResolver(env).Resolve(AgentCommand.Remote, new TraySettings());
@@ -71,7 +71,7 @@ public class AgentCommandResolverTests
         var env = new FakeEnvironment
         {
             Variables = { ["PATH"] = @"C:\Program Files\nodejs" },
-            Files = { @"C:\Program Files\nodejs\npx.cmd" },
+            Files = { NodeExe, @"C:\Program Files\nodejs\npx.cmd" },
         };
 
         var resolution = new AgentCommandResolver(env).Resolve(AgentCommand.Remote, new TraySettings());
@@ -106,7 +106,7 @@ public class AgentCommandResolverTests
         var env = new FakeEnvironment
         {
             Variables = { ["PATH"] = @"C:\Program Files\nodejs" },
-            Files = { @"C:\Program Files\nodejs\npx.cmd" },
+            Files = { NodeExe, @"C:\Program Files\nodejs\npx.cmd" },
         };
         var resolution = new AgentCommandResolver(env, allowPackageDownload: false)
             .Resolve(AgentCommand.Remote, new TraySettings());
@@ -140,7 +140,39 @@ public class AgentCommandResolverTests
         Assert.Contains("npm install -g", resolution.Problem);
     }
 
-    private sealed class FakeEnvironment : IAgentEnvironment
+    [Theory]
+    [InlineData("desktop-commander.cmd")]
+    [InlineData("npx.cmd")]
+    public void A_leftover_shim_does_not_hide_a_missing_node_installation(string shimName)
+    {
+        var environment = new FakeEnvironment
+        {
+            Variables = { ["PATH"] = @"C:\Old npm" },
+            Files = { $@"C:\Old npm\{shimName}" },
+        };
+        var result = new AgentCommandResolver(environment).Resolve(AgentCommand.Remote, new());
+        Assert.False(result.Found);
+        Assert.Contains("Node.js", result.Problem);
+    }
+
+    [Fact]
+    public void Uses_the_current_path_and_preserves_quoted_unicode_package_paths()
+    {
+        const string prefix = @"C:\工具 安装";
+        var entry = prefix + @"\node_modules\@wonderwhy-er\desktop-commander\dist\index.js";
+        var node = prefix + @"\node.exe";
+        var environment = new FakeEnvironment { Files = { node, entry } };
+        var resolver = new AgentCommandResolver(environment, allowPackageDownload: false);
+        Assert.False(resolver.Resolve(AgentCommand.Remote, new()).Found);
+
+        environment.Variables["PATH"] = $"\"{prefix}\"";
+        var result = resolver.Resolve(AgentCommand.Remote, new());
+
+        Assert.Equal(node, result.Spec?.FileName);
+        Assert.Equal($"\"{entry}\" remote", result.Spec?.Arguments);
+    }
+
+    internal sealed class FakeEnvironment : IAgentEnvironment
     {
         public Dictionary<string, string> Variables { get; } = new(StringComparer.OrdinalIgnoreCase);
 

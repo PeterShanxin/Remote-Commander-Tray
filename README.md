@@ -82,6 +82,7 @@ relying on colour alone.
 | --- | --- | --- |
 | Check | Online | Device registered and marked online |
 | Dots | Connecting / Reconnecting | Starting up, or re-establishing a dropped channel |
+| Dots | Stopping | The tray is cleaning up the current process group |
 | Key | Authentication required | Sign-in is pending or the session needs re-authentication |
 | Cross | Offline / Error | The agent failed, exited, or has been stuck for too long |
 | Pause | Stopped | You stopped the agent |

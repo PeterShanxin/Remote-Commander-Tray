@@ -71,7 +71,7 @@ internal sealed class TrayIcons : IDisposable
     private static Color BackgroundFor(AgentState state) => state switch
     {
         AgentState.Online => Green,
-        AgentState.Connecting or AgentState.Starting => Amber,
+        AgentState.Connecting or AgentState.Starting or AgentState.Stopping => Amber,
         AgentState.AuthenticationRequired => Violet,
         AgentState.Error => Red,
         _ => Gray,
@@ -94,6 +94,7 @@ internal sealed class TrayIcons : IDisposable
 
             case AgentState.Starting:
             case AgentState.Connecting:
+            case AgentState.Stopping:
                 // Three dots: "working on it".
                 using (var dots = new SolidBrush(Color.White))
                 {

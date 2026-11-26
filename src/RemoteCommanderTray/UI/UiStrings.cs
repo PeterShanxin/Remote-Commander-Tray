@@ -34,6 +34,7 @@ internal enum TextId
     Connecting,
     Reconnecting,
     Stopped,
+    Stopping,
     Offline,
     Error,
     AuthenticationRequired,
@@ -125,6 +126,7 @@ internal sealed class UiStrings
     public string State(AgentSnapshot snapshot) => snapshot.State switch
     {
         AgentState.Stopped => Get(TextId.Stopped),
+        AgentState.Stopping => Get(TextId.Stopping),
         AgentState.Starting => Get(TextId.Starting),
         AgentState.Connecting when snapshot.RestartCount > 0 || snapshot.LastConnectedUtc is not null =>
             Get(TextId.Reconnecting),
@@ -183,6 +185,7 @@ internal sealed class UiStrings
             [TextId.FollowWindows] = ("Follow Windows / 跟随系统", "Follow Windows / 跟随系统"),
             [TextId.Online] = ("Online", "已连接"),
             [TextId.Starting] = ("Starting", "正在启动"),
+            [TextId.Stopping] = ("Stopping", "正在停止"),
             [TextId.Connecting] = ("Connecting", "正在连接"),
             [TextId.Reconnecting] = ("Reconnecting", "正在重连"),
             [TextId.Stopped] = ("Stopped", "已停止"),

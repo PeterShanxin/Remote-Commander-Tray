@@ -61,6 +61,7 @@ public sealed record AgentSnapshot
     public string StateLabel => State switch
     {
         AgentState.Stopped => "Stopped",
+        AgentState.Stopping => "Stopping",
         AgentState.Starting => "Starting",
         AgentState.Connecting => RestartCount > 0 || LastConnectedUtc is not null ? "Reconnecting" : "Connecting",
         AgentState.AuthenticationRequired => "Authentication required",

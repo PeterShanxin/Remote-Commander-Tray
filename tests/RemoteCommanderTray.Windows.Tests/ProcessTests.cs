@@ -32,6 +32,15 @@ public sealed class ProcessTests
             Assert.Equal(0u, process.ActiveProcessCount);
         }
     }
+    [Fact] public async Task Starts_a_contained_agent_when_windows_returns_no_profile_directory()
+    {
+        using var process = new WindowsAgentProcess(Command("birth"));
+        var birthReport = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+        process.OutputReceived += (_, line) => birthReport.TrySetResult(line.Text);
+        process.Start(string.Empty);
+        Assert.Equal(0, await process.Completion.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal("inJob=True;console=False", await birthReport.Task.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
     [Fact] public async Task Natural_parent_exit_drains_orphan_before_completion()
     {
         var marker = Path.GetTempFileName();
@@ -75,6 +84,45 @@ public sealed class ProcessTests
             process.Dispose();
         }
         finally { process.Dispose(); CleanupProbeChild(marker); }
+    }
+    [Fact] public async Task Restart_and_quit_drain_grandchildren_with_unicode_paths()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "rct-进程 树-" + Guid.NewGuid());
+        Directory.CreateDirectory(root);
+        using var log = new RollingFileLog(Path.Combine(root, "agent.log"), 65536, 1);
+        var marker = Path.Combine(root, "child.pid");
+        var settings = new TraySettings
+        {
+            AgentExecutable = Dotnet,
+            AgentArguments = $"\"{Probe}\" grandtree \"{marker}\"",
+        };
+        var supervisor = new AgentSupervisor(new(), new WindowsAgentProcessFactory(), new(), () => settings, log);
+        try
+        {
+            await supervisor.StartAsync();
+            await WaitForPid(marker);
+            await WaitForPid(marker + ".grandchild");
+            var oldChild = ReadPid(marker);
+            var oldGrandchild = ReadPid(marker + ".grandchild");
+            File.Delete(marker);
+            File.Delete(marker + ".grandchild");
+
+            await supervisor.RestartAsync();
+            Assert.False(IsAlive(oldChild));
+            Assert.False(IsAlive(oldGrandchild));
+            await WaitForPid(marker);
+            await WaitForPid(marker + ".grandchild");
+            var newChild = ReadPid(marker);
+            var newGrandchild = ReadPid(marker + ".grandchild");
+            await supervisor.DisposeAsync();
+            Assert.False(IsAlive(newChild));
+            Assert.False(IsAlive(newGrandchild));
+        }
+        finally
+        {
+            await supervisor.DisposeAsync();
+            Directory.Delete(root, true);
+        }
     }
     [Fact] public async Task One_shot_timeout_cleans_the_complete_generation()
     {
@@ -121,8 +169,13 @@ public sealed class ProcessTests
     private static async Task WaitForPid(string marker)
     {
         var deadline = Stopwatch.StartNew();
-        while (new FileInfo(marker).Length == 0 && deadline.Elapsed < TimeSpan.FromSeconds(10)) await Task.Delay(20);
-        Assert.True(new FileInfo(marker).Length > 0, "Probe did not report its own child.");
+        var info = new FileInfo(marker);
+        while ((!info.Exists || info.Length == 0) && deadline.Elapsed < TimeSpan.FromSeconds(10))
+        {
+            await Task.Delay(20);
+            info.Refresh();
+        }
+        Assert.True(info.Exists && info.Length > 0, "Probe did not report its own child.");
     }
     private static void CleanupProbeChild(string marker)
     {

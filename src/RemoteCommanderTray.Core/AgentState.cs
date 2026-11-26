@@ -24,4 +24,7 @@ public enum AgentState
 
     /// <summary>The agent failed, exited unexpectedly, or has been offline long enough to be called broken.</summary>
     Error,
+
+    /// <summary>The supervisor is draining the current process group.</summary>
+    Stopping,
 }
