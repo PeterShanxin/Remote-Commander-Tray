@@ -51,12 +51,20 @@ when Windows announced suspend. On automatic resume from sleep or hibernation,
 that same online report becomes **Status unconfirmed**. A fresh online signal
 clears the pending sleep marker under the state lock, even if the process changed
 or the clock reads the same. A late or duplicate resume cannot undo fresh status.
-Screen unlock alone and elapsed silence have no effect. The next recognized CLI
-status drives the icon as usual. Tool output and device metadata cannot confirm it.
+Screen unlock alone has no effect. A recognized CLI status updates the icon
+immediately. Tool output and device metadata cannot confirm the connection.
 
-The question mark starts no timer, notification or process action. The healthy-run
-backoff reset still uses the original online interval. A reported disconnect starts
-the normal reconnect interval and can raise the existing stalled-connection notice.
+For a quiet, still-running agent, the supervisor's existing 15-second health check
+restores Online after `wakeGraceSeconds` (default 180, minimum 90). CLI 0.3.1
+attempts to recreate a joined channel when its last confirmed heartbeat is over
+75 seconds old. Its 10-second check interval gives a nominal detection window
+of 85 seconds. The default allows a further 95 seconds for scheduling delays.
+A second sleep during this window starts a new grace period on the next wake.
+
+Grace expiry changes the displayed state without recording a new connection,
+restarting the agent or notifying the user. The healthy-run backoff reset still
+uses the original online interval. A reported disconnect starts the normal
+reconnect interval and can raise the existing stalled-connection notice.
 
 Terminal session loss or an expired authorization prompt pauses for explicit user
 re-authentication with one actionable notice, rather than looping browser launches.

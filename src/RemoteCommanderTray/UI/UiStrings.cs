@@ -188,7 +188,7 @@ internal sealed class UiStrings
             [TextId.FollowWindows] = ("Follow Windows / 跟随系统", "Follow Windows / 跟随系统"),
             [TextId.Online] = ("Online", "已连接"),
             [TextId.Unconfirmed] = ("Status unconfirmed", "状态待确认"),
-            [TextId.WaitingAfterSleep] = ("Waiting for a device report after sleep.", "电脑已唤醒，正在等待设备报告状态。"),
+            [TextId.WaitingAfterSleep] = ("After sleep, allow a few minutes.", "电脑已唤醒，状态通常会在几分钟内更新。"),
             [TextId.Starting] = ("Starting", "正在启动"),
             [TextId.Stopping] = ("Stopping", "正在停止"),
             [TextId.Connecting] = ("Connecting", "正在连接"),
