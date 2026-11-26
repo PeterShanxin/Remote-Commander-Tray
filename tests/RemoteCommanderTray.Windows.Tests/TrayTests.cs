@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using RemoteCommanderTray.Core;
 using RemoteCommanderTray.UI;
 using RemoteCommanderTray.Windows;
@@ -8,6 +9,63 @@ namespace RemoteCommanderTray.Windows.Tests;
 
 public sealed class TrayTests
 {
+    [DllImport("user32.dll", EntryPoint = "SendMessageW")]
+    private static extern nint SendMessage(nint window, uint message, nuint parameter, nint data);
+
+    [Theory]
+    [InlineData("en", "Status unconfirmed", "sleep")]
+    [InlineData("zh-CN", "状态待确认", "唤醒")]
+    public async Task Wake_replaces_the_online_icon_and_explains_why(string language, string label, string reason)
+    {
+        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            var root = Path.Combine(Path.GetTempPath(), "rct-tray-wake-" + Guid.NewGuid());
+            try
+            {
+                var paths = new AppPaths(root);
+                paths.EnsureCreated();
+                var settings = new TraySettings { StartAgentOnLaunch = false, Language = language };
+                using var log = new RollingFileLog(paths.AgentLogFile, 65536, 1);
+                var balloons = 0;
+                using var tray = new TrayApplicationContext(paths, settings, log, "test", startedByWindows: true,
+                    (_, _, _, _) => balloons++);
+                var supervisor = Field<AgentSupervisor>(tray, "_supervisor");
+                var machine = Field<AgentStateMachine>(supervisor, "_machine");
+                var receiver = Field<Control>(tray, "_marshal");
+                var window = receiver.Handle;
+                var icon = Field<NotifyIcon>(tray, "_notifyIcon");
+                machine.OnProcessStarted();
+                machine.Apply(new AgentSignal(AgentSignalKind.DeviceReady));
+                var onlineIcon = icon.Icon;
+                // A worker's queued Online rendering must not override the wake.
+                Task.Run(() => machine.Apply(new AgentSignal(AgentSignalKind.DeviceName, "test-pc")))
+                    .GetAwaiter().GetResult();
+                SendMessage(window, 0x218, 4, 0); // WM_POWERBROADCAST, PBT_APMSUSPEND
+                Assert.Same(onlineIcon, icon.Icon);
+                SendMessage(window, 0x218, 18, 0); // PBT_APMRESUMEAUTOMATIC
+                Application.DoEvents();
+                Assert.Contains(label, icon.Text);
+                Assert.Contains(reason, icon.Text);
+                Assert.StartsWith("? " + label, Field<ToolStripMenuItem>(tray, "_headerItem").Text);
+                Assert.Contains(reason, Field<ToolStripMenuItem>(tray, "_detailItem").Text);
+                Assert.NotSame(onlineIcon, icon.Icon);
+                Assert.True(Assert.IsAssignableFrom<Form>(receiver).TopLevel);
+                Assert.False(receiver.Visible);
+                machine.Apply(new AgentSignal(AgentSignalKind.DeviceOnline));
+                SendMessage(window, 0x218, 7, 0); // Later user-present resume notification
+                Assert.Same(onlineIcon, icon.Icon);
+                Assert.Equal(0, balloons);
+                done.TrySetResult();
+            }
+            catch (Exception ex) { done.TrySetException(ex); }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }) { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        await done.Task.WaitAsync(TimeSpan.FromSeconds(20));
+    }
+
     [Fact]
     public async Task Queued_online_status_cannot_overwrite_a_newer_stop_on_the_tray()
     {

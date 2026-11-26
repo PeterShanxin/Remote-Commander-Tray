@@ -65,10 +65,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _settings = () => settings;
         _strings = new UiStrings(settings.Language);
 
-        // A real control gives a dependable BeginInvoke target for supervisor callbacks,
-        // which arrive on thread-pool threads.
-        _marshal = new Control();
-        _marshal.CreateControl();
+        var machine = new AgentStateMachine();
+        _marshal = new TrayMessageWindow(machine);
+        _ = _marshal.Handle; // Receive broadcasts without showing a window.
 
         _processFactory = new WindowsAgentProcessFactory();
 
@@ -78,7 +77,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ? new RollingFileLog(paths.VerboseAgentLogFile, settings.LogMaxBytes, settings.LogRetainedFiles)
             : null;
 
-        var machine = new AgentStateMachine();
         _supervisor = new AgentSupervisor(
             machine,
             _processFactory,
@@ -246,6 +244,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private static string GlyphFor(AgentState state) => state switch
     {
         AgentState.Online => "✓",                 // check
+        AgentState.Unconfirmed => "?",
         AgentState.Connecting or AgentState.Starting or AgentState.Stopping => "…", // ellipsis
         AgentState.AuthenticationRequired => "\U0001F511", // key
         AgentState.Error => "×",                  // multiplication sign
@@ -257,6 +256,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private string BuildDetailLine(AgentSnapshot snapshot)
     {
+        if (snapshot.State == AgentState.Unconfirmed) return _strings.Get(TextId.WaitingAfterSleep);
+
         if (snapshot.NextRestartUtc is { } due)
         {
             var seconds = Math.Max(0, (int)(due - DateTimeOffset.UtcNow).TotalSeconds);
@@ -276,10 +277,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private string BuildTooltip(AgentSnapshot snapshot)
     {
         // NotifyIcon.Text refuses anything longer than 63 characters.
-        var full = _strings.Format(TextId.StatusTitle, _strings.State(snapshot)) + DeviceSuffix(snapshot);
-        return full.Length <= TooltipMaxLength
-            ? full
-            : Truncate(full, TooltipMaxLength);
+        var status = _strings.State(snapshot);
+        var full = snapshot.State == AgentState.Unconfirmed
+            ? $"{status} · {_strings.Get(TextId.WaitingAfterSleep)}"
+            : _strings.Format(TextId.StatusTitle, status) + DeviceSuffix(snapshot);
+        return Truncate(full, TooltipMaxLength);
     }
 
     private static string Truncate(string value, int maxLength)

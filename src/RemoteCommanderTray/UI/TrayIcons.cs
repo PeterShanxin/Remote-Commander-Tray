@@ -83,6 +83,13 @@ internal sealed class TrayIcons : IDisposable
 
         switch (state)
         {
+            case AgentState.Unconfirmed:
+                // Question mark, including a separate dot at small icon sizes.
+                g.DrawArc(pen, P(0.34), P(0.22), P(0.32), P(0.32), 190, 250);
+                g.DrawLine(pen, P(0.53), P(0.54), P(0.49), P(0.59));
+                g.FillEllipse(Brushes.White, P(0.43), P(0.71), P(0.12), P(0.12));
+                break;
+
             case AgentState.Online:
                 // Check mark.
                 g.DrawLines(pen, [

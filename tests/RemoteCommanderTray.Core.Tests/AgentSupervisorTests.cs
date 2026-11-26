@@ -40,6 +40,95 @@ public class AgentSupervisorTests : IDisposable
     }
 
     [Fact]
+    public async Task Wake_keeps_the_agent_quiet_until_a_reported_disconnect_really_stalls()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var machine = new AgentStateMachine(() => now);
+        var backoff = new RestartBackoff();
+        await using var supervisor = new AgentSupervisor(machine, _factory,
+            new AgentCommandResolver(new InstalledAgentEnvironment()), () => _settings, _log, clock: () => now,
+            backoff: backoff);
+        var notices = new List<TrayNotification>();
+        supervisor.Notification += (_, notice) => notices.Add(notice);
+        var health = typeof(AgentSupervisor).GetMethod("RunHealthCheck", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        await supervisor.StartAsync();
+        var agent = _factory.Latest;
+        agent.Emit("Device ready:");
+        backoff.NextDelay(); // A previous failed attempt awaits the normal healthy-run reset.
+        machine.OnSystemSuspending();
+        now = now.AddSeconds(_settings.HealthyRunSeconds);
+        machine.OnSystemResumed();
+        health.Invoke(supervisor, null);
+        Assert.Equal(0, backoff.Attempt);
+        now = now.AddDays(1);
+        health.Invoke(supervisor, null);
+        Assert.Equal(AgentState.Unconfirmed, supervisor.Snapshot.State);
+        Assert.Null(supervisor.Snapshot.NextRestartUtc);
+        Assert.Equal(0, supervisor.Snapshot.TotalRestartCount);
+        Assert.Single(_factory.Created);
+        Assert.True(supervisor.IsRunning);
+        Assert.False(agent.StopRequested);
+        Assert.Empty(notices);
+
+        agent.Emit("Channel closed", isError: true);
+        health.Invoke(supervisor, null);
+        Assert.Equal(AgentState.Connecting, supervisor.Snapshot.State);
+        Assert.Empty(notices);
+        now = now.AddMinutes(_settings.StalledConnectionMinutes);
+        health.Invoke(supervisor, null);
+        health.Invoke(supervisor, null);
+        Assert.Equal(AgentState.Error, supervisor.Snapshot.State);
+        Assert.Equal(NotificationKind.ConnectionStalled, Assert.Single(notices).Kind);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Wake_cannot_override_stop_or_a_replacement_generation(bool restart, bool delayedWake)
+    {
+        await _supervisor.StartAsync();
+        _factory.Latest.Emit("Device ready:");
+        _machine.OnSystemSuspending();
+        if (!delayedWake)
+        {
+            _machine.OnSystemResumed();
+            Assert.Equal(AgentState.Unconfirmed, _supervisor.Snapshot.State);
+        }
+        if (restart)
+        {
+            await _supervisor.RestartAsync();
+            _factory.Latest.Emit("Device ready:");
+        }
+        else
+        {
+            await _supervisor.StopAsync();
+        }
+        _machine.OnSystemResumed();
+        Assert.Equal(restart ? AgentState.Online : AgentState.Stopped, _supervisor.Snapshot.State);
+        Assert.Empty(_notifications);
+    }
+
+    [Fact]
+    public async Task Session_expiry_after_wake_still_pauses_for_one_sign_in_notice()
+    {
+        await _supervisor.StartAsync();
+        var agent = _factory.Latest;
+        agent.Emit("Device ready:");
+        _machine.OnSystemSuspending();
+        _machine.OnSystemResumed();
+        agent.Emit("Remote session expired and could not be renewed.");
+        await WaitUntil(() => !_supervisor.Snapshot.ProcessRunning && _supervisor.Snapshot.RequiresReauthentication);
+        _machine.OnSystemSuspending();
+        _machine.OnSystemResumed();
+        Assert.Equal(AgentState.AuthenticationRequired, _supervisor.Snapshot.State);
+        Assert.Equal(NotificationKind.AuthenticationRequired, Assert.Single(_notifications).Kind);
+        Assert.True(agent.StopRequested);
+        Assert.Null(_supervisor.Snapshot.NextRestartUtc);
+    }
+
+    [Fact]
     public async Task Start_launches_exactly_one_agent_and_a_second_start_does_not_add_another()
     {
         await _supervisor.StartAsync();

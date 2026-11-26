@@ -17,6 +17,7 @@ public sealed class AgentStateMachine
 
     private AgentSnapshot _snapshot = AgentSnapshot.Initial;
     private bool _deviceReadySeen;
+    private bool _onlineReportPredatesSleep;
 
     public AgentStateMachine(Func<DateTimeOffset>? clock = null)
     {
@@ -41,6 +42,26 @@ public sealed class AgentStateMachine
     /// <summary>Records whether the user wants the agent running at all.</summary>
     public void SetAgentWanted(bool wanted)
         => Update(s => s with { AgentWanted = wanted });
+
+    public void OnSystemSuspending()
+    {
+        lock (_gate)
+        {
+            _onlineReportPredatesSleep = _snapshot.State == AgentState.Online;
+        }
+    }
+
+    public void OnSystemResumed()
+    {
+        Update(s =>
+        {
+            var hadOnlineReport = _onlineReportPredatesSleep;
+            _onlineReportPredatesSleep = false;
+            return hadOnlineReport && s.State == AgentState.Online && s.AgentWanted && s.ProcessRunning
+                ? Transition(s, AgentState.Unconfirmed)
+                : s;
+        });
+    }
 
     /// <summary>A child process has just been launched.</summary>
     public void OnProcessStarted()
@@ -208,7 +229,8 @@ public sealed class AgentStateMachine
 
             case AgentSignalKind.SessionInvalid:
                 // Printed just before the CLI falls back to a fresh authorization flow.
-                return s with { LastError = NullIfBlank(signal.Value) };
+                var invalid = s with { LastError = NullIfBlank(signal.Value) };
+                return s.State == AgentState.Unconfirmed ? Transition(invalid, AgentState.Connecting) : invalid;
 
             case AgentSignalKind.SessionExpired:
                 return Transition(
@@ -233,13 +255,14 @@ public sealed class AgentStateMachine
 
             case AgentSignalKind.ChannelSubscribed:
                 // Realtime is back. Only claim Online if the device finished registering.
-                return _deviceReadySeen ? MarkOnline(s) : s;
+                if (_deviceReadySeen) return MarkOnline(s);
+                return s.State == AgentState.Unconfirmed ? Transition(s, AgentState.Connecting) : s;
 
             case AgentSignalKind.DeviceOffline:
             case AgentSignalKind.ChannelDisrupted:
                 // The official device owns heartbeat and channel recovery, so a blip is
                 // a status change for the icon, never a reason to restart the process.
-                return s.State == AgentState.Online
+                return s.State is AgentState.Online or AgentState.Unconfirmed
                     ? Transition(s with { LastError = NullIfBlank(signal.Value) }, AgentState.Connecting)
                     : s;
 
@@ -250,7 +273,7 @@ public sealed class AgentStateMachine
 
             case AgentSignalKind.ShuttingDown:
             case AgentSignalKind.RemoteShutdownRequested:
-                return s;
+                return s.State == AgentState.Unconfirmed ? Transition(s, AgentState.Stopping) : s;
 
             default:
                 return s;
@@ -259,11 +282,15 @@ public sealed class AgentStateMachine
 
     private AgentSnapshot MarkOnline(AgentSnapshot s)
     {
+        // An output callback can reconfirm this or a replacement process before
+        // Windows delivers resume, even with an unchanged wall-clock timestamp.
+        _onlineReportPredatesSleep = false;
         var now = _clock();
         return Transition(
             s with
             {
                 LastConnectedUtc = now,
+                OnlineSinceUtc = s.State is AgentState.Online or AgentState.Unconfirmed ? s.OnlineSinceUtc : now,
                 VerificationUri = null,
                 UserCode = null,
                 LastError = null,
