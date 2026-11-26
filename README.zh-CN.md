@@ -76,7 +76,8 @@ npm install -g @wonderwhy-er/desktop-commander
 
 | 图形 | 状态 | 含义 |
 | --- | --- | --- |
-| 对勾 | Online | 设备已注册并标记为 online |
+| 对勾 | Online（已连接） | CLI 最近一次报告设备在线 |
+| 问号 | Status unconfirmed（状态待确认） | 电脑刚从睡眠或休眠中唤醒，托盘正在等待 CLI 检查连接 |
 | 三点 | Connecting / Reconnecting | 正在启动，或正在重建断开的 channel |
 | 三点 | Stopping | 正在清理当前进程组 |
 | 钥匙 | Authentication required | 登录尚未完成，或会话已失效需要重新认证 |
@@ -84,6 +85,8 @@ npm install -g @wonderwhy-er/desktop-commander
 | 暂停 | Stopped | 你手动停止了 agent |
 
 Tooltip 形如：`Remote Commander - Online - YOURMACHINE`。
+
+唤醒后，CLI 一旦报告连接、登录或出错，图标就会随之更新。如果同一进程一直运行，而且没有新的状态报告，托盘会在宽限期结束后的首次检查时恢复显示“已连接”。宽限期默认 3 分钟，可在 `settings.json` 中用 `wakeGraceSeconds` 调整，最短 90 秒。“上次连接”仍显示 CLI 上次报告在线的时间。这次显示更新不会重启进程或弹出通知。单独解锁屏幕不会开始宽限期。
 
 ## 右键菜单
 

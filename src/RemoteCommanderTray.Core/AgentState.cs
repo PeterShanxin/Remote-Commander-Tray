@@ -27,4 +27,7 @@ public enum AgentState
 
     /// <summary>The supervisor is draining the current process group.</summary>
     Stopping,
+
+    /// <summary>The last online report predates system sleep.</summary>
+    Unconfirmed,
 }

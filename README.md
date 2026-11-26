@@ -80,7 +80,8 @@ relying on colour alone.
 
 | Icon | State | Meaning |
 | --- | --- | --- |
-| Check | Online | Device registered and marked online |
+| Check | Online | The CLI last reported that the device was online |
+| ? | Status unconfirmed | The computer woke from sleep or hibernation. The tray is allowing time for the CLI to detect a lost connection. |
 | Dots | Connecting / Reconnecting | Starting up, or re-establishing a dropped channel |
 | Dots | Stopping | The tray is cleaning up the current process group |
 | Key | Authentication required | Sign-in is pending or the session needs re-authentication |
@@ -88,6 +89,13 @@ relying on colour alone.
 | Pause | Stopped | You stopped the agent |
 
 Tooltip: `Remote Commander - Online - YOURMACHINE`.
+
+After wake, a connection, sign-in or error report updates the icon immediately.
+If the same agent keeps running without a new status report, the tray shows **Online**
+again on its first health check after the grace period (three minutes by default).
+The last connected time still shows when the CLI last reported the device online.
+The agent keeps running and the tray shows no notification. Unlocking the screen
+alone does not start a grace period.
 
 ## Menu
 
@@ -170,6 +178,7 @@ review. Neither current nor historical logs are included by **Copy diagnostics**
 | `stalledConnectionMinutes` | `5` | How long a stuck reconnect runs before you are told |
 | `startFailureAlertThreshold` | `3` | Consecutive failed starts before you are told |
 | `healthyRunSeconds` | `60` | A run this long resets the restart backoff |
+| `wakeGraceSeconds` | `180` | Seconds to wait after wake before showing Online again if the CLI stays quiet (minimum 90) |
 | `logMaxBytes` | `1048576` | Rotate `agent.log` past this size |
 | `logRetainedFiles` | `3` | How many rotated logs to keep |
 | `notificationsEnabled` | `true` | Desktop notifications on or off |

@@ -30,8 +30,11 @@ public sealed record AgentSnapshot
     /// <summary>Signed-in account reported by the CLI.</summary>
     public string? UserEmail { get; init; }
 
-    /// <summary>Last time the device reached <see cref="AgentState.Online"/>, in UTC.</summary>
+    /// <summary>Last time the CLI reported the device online, in UTC.</summary>
     public DateTimeOffset? LastConnectedUtc { get; init; }
+
+    /// <summary>Start of the online interval used for backoff, including time awaiting wake confirmation.</summary>
+    internal DateTimeOffset OnlineSinceUtc { get; init; }
 
     /// <summary>Sign-in page printed by the CLI while a device authorization flow is pending.</summary>
     public string? VerificationUri { get; init; }
@@ -66,6 +69,7 @@ public sealed record AgentSnapshot
         AgentState.Connecting => RestartCount > 0 || LastConnectedUtc is not null ? "Reconnecting" : "Connecting",
         AgentState.AuthenticationRequired => "Authentication required",
         AgentState.Online => "Online",
+        AgentState.Unconfirmed => "Status unconfirmed",
         AgentState.Error => ProcessRunning ? "Error" : "Offline",
         _ => State.ToString(),
     };

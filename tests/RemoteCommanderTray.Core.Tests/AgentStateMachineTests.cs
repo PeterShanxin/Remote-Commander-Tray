@@ -29,6 +29,59 @@ public class AgentStateMachineTests
     }
 
     [Fact]
+    public void Wake_only_invalidates_the_online_report_observed_at_suspend()
+    {
+        var machine = NewMachine();
+        machine.OnProcessStarted();
+        machine.Apply(new(AgentSignalKind.DeviceReady));
+        machine.OnSystemSuspending();
+        // Identical clock readings must still count as two independent CLI reports.
+        machine.Apply(new(AgentSignalKind.DeviceOnline));
+        machine.OnSystemResumed();
+        Assert.Equal(AgentState.Online, machine.Snapshot.State);
+
+        machine.OnSystemSuspending();
+        machine.Apply(new(AgentSignalKind.DeviceName, "test-machine"));
+        machine.OnSystemResumed();
+        Assert.Equal(AgentState.Unconfirmed, machine.Snapshot.State);
+        machine.Apply(new(AgentSignalKind.DeviceOnline));
+        machine.OnSystemResumed();
+        Assert.Equal(AgentState.Online, machine.Snapshot.State);
+    }
+
+    [Theory]
+    [InlineData(AgentSignalKind.DeviceReady, AgentState.Online)]
+    [InlineData(AgentSignalKind.DeviceOnline, AgentState.Online)]
+    [InlineData(AgentSignalKind.ChannelSubscribed, AgentState.Online)]
+    [InlineData(AgentSignalKind.DeviceOffline, AgentState.Connecting)]
+    [InlineData(AgentSignalKind.ChannelDisrupted, AgentState.Connecting)]
+    [InlineData(AgentSignalKind.AuthenticationStarted, AgentState.AuthenticationRequired)]
+    [InlineData(AgentSignalKind.SessionExpired, AgentState.AuthenticationRequired)]
+    [InlineData(AgentSignalKind.StartupFailed, AgentState.Error)]
+    [InlineData(AgentSignalKind.SessionInvalid, AgentState.Connecting)]
+    [InlineData(AgentSignalKind.ShuttingDown, AgentState.Stopping)]
+    [InlineData(AgentSignalKind.RemoteShutdownRequested, AgentState.Stopping)]
+    public void Wake_waits_for_a_status_report(AgentSignalKind signal, AgentState expected)
+    {
+        var machine = NewMachine();
+        machine.OnProcessStarted();
+        machine.Apply(new(AgentSignalKind.DeviceReady));
+        var lastConnected = machine.Snapshot.LastConnectedUtc;
+        machine.OnSystemSuspending();
+        _now = _now.AddHours(8);
+        machine.OnSystemResumed();
+        machine.Apply(new(AgentSignalKind.ToolPayload));
+        machine.Apply(new(AgentSignalKind.DeviceName, "private-test-name"));
+        Assert.Equal(lastConnected, machine.Snapshot.LastConnectedUtc);
+        Assert.Equal(_now, machine.Snapshot.StateSinceUtc);
+        var diagnostics = DiagnosticsReport.Build(machine.Snapshot, default);
+        Assert.Contains("Status unconfirmed", diagnostics);
+        Assert.DoesNotContain("private-test-name", diagnostics);
+        machine.Apply(new(signal));
+        Assert.Equal(expected, machine.Snapshot.State);
+    }
+
+    [Fact]
     public void Walks_a_successful_startup_to_online()
     {
         var machine = NewMachine();
