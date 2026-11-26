@@ -80,7 +80,8 @@ relying on colour alone.
 
 | Icon | State | Meaning |
 | --- | --- | --- |
-| Check | Online | Device registered and marked online |
+| Check | Online | The CLI last reported that the device was online |
+| ? | Status unconfirmed | The computer woke from sleep or hibernation. The tray is waiting for a fresh device status report. |
 | Dots | Connecting / Reconnecting | Starting up, or re-establishing a dropped channel |
 | Dots | Stopping | The tray is cleaning up the current process group |
 | Key | Authentication required | Sign-in is pending or the session needs re-authentication |
@@ -88,6 +89,11 @@ relying on colour alone.
 | Pause | Stopped | You stopped the agent |
 
 Tooltip: `Remote Commander - Online - YOURMACHINE`.
+
+After wake, the next connection, sign-in or error report updates the icon. A healthy
+idle device can stay quiet, so the question mark can remain until the CLI reports
+again. Silence alone or unlocking the screen leaves the icon as it was. The question
+mark only changes the display. The agent keeps running without a restart or notification.
 
 ## Menu
 

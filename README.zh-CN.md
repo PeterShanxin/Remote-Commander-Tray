@@ -76,7 +76,8 @@ npm install -g @wonderwhy-er/desktop-commander
 
 | 图形 | 状态 | 含义 |
 | --- | --- | --- |
-| 对勾 | Online | 设备已注册并标记为 online |
+| 对勾 | Online（已连接） | CLI 最近一次报告设备在线 |
+| 问号 | Status unconfirmed（状态待确认） | 电脑从睡眠或休眠中唤醒，托盘正在等待设备报告新状态 |
 | 三点 | Connecting / Reconnecting | 正在启动，或正在重建断开的 channel |
 | 三点 | Stopping | 正在清理当前进程组 |
 | 钥匙 | Authentication required | 登录尚未完成，或会话已失效需要重新认证 |
@@ -84,6 +85,8 @@ npm install -g @wonderwhy-er/desktop-commander
 | 暂停 | Stopped | 你手动停止了 agent |
 
 Tooltip 形如：`Remote Commander - Online - YOURMACHINE`。
+
+唤醒后，CLI 一旦报告连接、登录或出错，图标就会随之更新。设备正常在线时也可能一直安静，因此问号可能会保留到下次状态报告。仅仅没有输出或解锁屏幕都不会改变图标。问号只影响显示，托盘不会因此重启 agent 或弹出通知。
 
 ## 右键菜单
 
