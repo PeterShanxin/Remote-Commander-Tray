@@ -14,8 +14,8 @@
     <Product>Remote Commander Tray</Product>
     <Company>Remote Commander Tray contributors</Company>
     <Copyright>Copyright (c) 2026 Peter Shanxin</Copyright>
-    <Version>0.3.0</Version>
-    <StorePackageVersion>1.2.0.0</StorePackageVersion>
+    <Version>0.3.1</Version>
+    <StorePackageVersion>1.2.1.0</StorePackageVersion>
   </PropertyGroup>
 
 </Project>
