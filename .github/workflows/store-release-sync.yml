@@ -1,0 +1,107 @@
+name: Sync GitHub release to Microsoft Store
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: store-release-sync
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      github.event_name == 'release' &&
+      github.repository == 'PeterShanxin/Remote-Commander-Tray' &&
+      github.actor == 'PeterShanxin' &&
+      github.triggering_actor == 'PeterShanxin' &&
+      !github.event.release.draft && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify exact release source and version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          python3 tools/sync-store-release.py verify-tag "$RELEASE_TAG" Directory.Build.props
+
+  packages:
+    needs: verify
+    uses: ./.github/workflows/store.yml
+
+  submit:
+    needs: [verify, packages]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: store-submission
+    steps:
+      - name: Check explicit activation and publication cutoff
+        id: activation
+        env:
+          ENABLED: ${{ vars.STORE_RELEASE_AUTOMATION_ENABLED }}
+          AFTER: ${{ vars.STORE_RELEASES_AFTER }}
+          PUBLISHED: ${{ github.event.release.published_at }}
+        run: |
+          if [[ "$ENABLED" != true ]]; then
+            echo "Microsoft Store automation is disabled."
+            exit 0
+          fi
+          python3 - <<'PY'
+          import datetime, os, re
+          def timestamp(key):
+              value = os.environ[key]
+              if not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z", value):
+                  raise SystemExit("Missing or malformed UTC Store activation cutoff or release timestamp.")
+              return datetime.datetime.fromisoformat(value)
+          if timestamp("PUBLISHED") > timestamp("AFTER"):
+              with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                  print("active=true", file=output)
+          else:
+              print("Historical release; no Microsoft Store action.")
+          PY
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: steps.activation.outputs.active == 'true'
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        if: steps.activation.outputs.active == 'true'
+        with:
+          pattern: Store-*
+          path: ${{ runner.temp }}/store-assets
+      - name: Submit exactly the validated packages for certification
+        if: steps.activation.outputs.active == 'true'
+        env:
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+        run: python3 tools/sync-store-release.py submit "$GITHUB_SHA" Directory.Build.props "${{ runner.temp }}/store-assets"
+
+  inventory:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'PeterShanxin/Remote-Commander-Tray' &&
+      github.ref == 'refs/heads/main' &&
+      github.actor == 'PeterShanxin' && github.triggering_actor == 'PeterShanxin'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: store-submission
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Read published versions and pending certification
+        env:
+          AZURE_AD_TENANT_ID: ${{ secrets.AZURE_AD_TENANT_ID }}
+          AZURE_AD_APPLICATION_CLIENT_ID: ${{ secrets.AZURE_AD_APPLICATION_CLIENT_ID }}
+          AZURE_AD_APPLICATION_SECRET: ${{ secrets.AZURE_AD_APPLICATION_SECRET }}
+        run: python3 tools/sync-store-release.py inventory
