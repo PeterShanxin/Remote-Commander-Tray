@@ -40,7 +40,7 @@ unsigned build artifact. Its certificate is never a release signing credential.
 ## Automatic submission
 
 The [release sync](../.github/workflows/store-release-sync.yml) builds x64 and
-ARM64 from the exact tag after the owner publishes a stable GitHub release.
+ARM64 from the exact tag after a stable GitHub release is published.
 The tag must match the app version and point to a commit on `main`. The
 workflow checks the build receipts, SHA-256, MSIX identities and executable
 architectures before contacting Partner Center. It replaces only packages,
@@ -69,10 +69,13 @@ Activation is intentionally separate from merging:
    submissions; this does not cancel certification already underway.
 
 Bump the independent Store package version above all published versions
-before a release. Create a GitHub draft, attach and verify the release assets,
-then publish under the owner account. GitHub will not deliver the
-`release.published` trigger when a workflow publishes with its
-`GITHUB_TOKEN`; owner publication is the supported path.
+before a release. The existing CI still publishes the verified GitHub release
+first, then calls Store sync in the same run with the new release ID. GitHub
+does not deliver a separate `release.published` event for the CI
+`GITHUB_TOKEN`. For a stable release published directly by the owner, the
+event provides a second supported entry point. Both paths require the
+trusted owner and independently read the publication from GitHub. A skipped or
+already-published release in CI is never handed off.
 
 The sync never edits, cancels or commits someone else's draft. A matching
 already-submitted or published pair is a no-op. A failed upload leaves its
