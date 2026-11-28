@@ -12,7 +12,9 @@ Merging the version change to `main` runs **Store package** for x64 and ARM64.
 Rebuild the same revision via **Run workflow** if needed. Download `Store-x64`
 and `Store-arm64` from the successful run, check that both `build-info.json` files
 match the intended commit and version, then upload the unsigned MSIXs to Partner
-Center. The workflow builds and validates packages; it does not submit them.
+Center. The **Store package** workflow builds and validates packages; it
+does not submit them. The separate release sync below automates submission
+after it is enabled.
 
 For a local build, install .NET SDK 8 and Windows SDK (MakeAppx), then run:
 
@@ -34,6 +36,53 @@ be installed as a trusted Store release until Microsoft signs/distributes it.
 Do not disable Smart App Control or install a local root certificate to use it.
 The CI installation test signs only a disposable runner copy, after uploading the
 unsigned build artifact. Its certificate is never a release signing credential.
+
+## Automatic submission
+
+The [release sync](../.github/workflows/store-release-sync.yml) builds x64 and
+ARM64 from the exact tag after a stable GitHub release is published.
+The tag must match the app version and point to a commit on `main`. The
+workflow checks the build receipts, SHA-256, MSIX identities and executable
+architectures before contacting Partner Center. It replaces only packages,
+preserves existing listing metadata, and requests publication after
+certification. Linux release assets are not sent to Microsoft.
+
+Activation is intentionally separate from merging:
+
+1. In Partner Center, confirm the free MSIX product `9PK9DMKPH68Q` already
+   has a published submission and the associated Microsoft Entra application
+   has the Manager role for the [MSIX submission API](https://learn.microsoft.com/en-us/windows/uwp/monetize/manage-app-submissions).
+2. In GitHub, create or inspect the `store-submission` environment. Store
+   `AZURE_AD_TENANT_ID`, `AZURE_AD_APPLICATION_CLIENT_ID` and
+   `AZURE_AD_APPLICATION_SECRET` only in that environment. Allow deployments
+   from `main` and stable release tags (`v*`); do not grant other workflows the
+   same credentials. Keep trusted tag creation restricted to the maintainers.
+   Required reviewers are optional but would stop unattended submission.
+3. On `main`, run **Sync GitHub release to Microsoft Store** manually for
+   read-only inventory. Verify the published versions and clear any pending
+   submission through its current owner. Manual dispatch never submits.
+4. Set `STORE_RELEASES_AFTER` to the UTC activation time, using
+   `YYYY-MM-DDTHH:MM:SSZ`, and then set
+   `STORE_RELEASE_AUTOMATION_ENABLED=true`. Both are environment variables.
+   Older release events cannot submit, even when rerun. Leave the toggle
+   off until setup and inventory are verified. Turn it off to pause future
+   submissions; this does not cancel certification already underway.
+
+Bump the independent Store package version above all published versions
+before a release. The existing CI still publishes the verified GitHub release
+first, then calls Store sync in the same run with the new release ID. GitHub
+does not deliver a separate `release.published` event for the CI
+`GITHUB_TOKEN`. For a stable release published directly by the owner, the
+event provides a second supported entry point. Both paths require the
+trusted owner and independently read the publication from GitHub. A skipped or
+already-published release in CI is never handed off.
+
+The sync never edits, cancels or commits someone else's draft. A matching
+already-submitted or published pair is a no-op. A failed upload leaves its
+draft in place: use the printed submission ID and inspect it deliberately;
+do not rerun expecting the workflow to reuse it. A GitHub job that reports
+certification started is not proof Microsoft has certified or published it.
+Use the same read-only inventory dispatch or Partner Center to check status.
 
 ## Store-specific behavior
 
