@@ -72,12 +72,16 @@ class FakeStore:
 
 class SyncTests(unittest.TestCase):
     def test_tag_must_match_source_version(self):
-        props = ROOT / "Directory.Build.props"
-        current = store.props_versions(props)[0]
-        store.verify_tag(f"v{current}", props)
-        for tag in ["v9999.9999.9999", f"v{current}-rc", f"v0{current}"]:
-            with self.assertRaises(store.StoreError):
-                store.verify_tag(tag, props)
+        with tempfile.TemporaryDirectory() as directory:
+            props = Path(directory) / "Directory.Build.props"
+            props.write_text(
+                "<Project><PropertyGroup><Version>0.3.1</Version>"
+                "<StorePackageVersion>1.2.1.0</StorePackageVersion></PropertyGroup></Project>"
+            )
+            store.verify_tag("v0.3.1", props)
+            for tag in ["v0.3.2", "v0.3.1-rc", "v00.3.1"]:
+                with self.assertRaises(store.StoreError):
+                    store.verify_tag(tag, props)
 
     def test_rejects_wrong_receipt_digest_or_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
