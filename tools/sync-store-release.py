@@ -258,10 +258,11 @@ def main():
     tag = commands.add_parser("verify-tag")
     tag.add_argument("tag")
     tag.add_argument("props", type=Path)
-    release = commands.add_parser("submit")
-    release.add_argument("commit")
-    release.add_argument("props", type=Path)
-    release.add_argument("artifacts", type=Path)
+    for name in ("verify-artifacts", "submit"):
+        release = commands.add_parser(name)
+        release.add_argument("commit")
+        release.add_argument("props", type=Path)
+        release.add_argument("artifacts", type=Path)
     commands.add_parser("inventory")
     args = parser.parse_args()
     try:
@@ -272,7 +273,10 @@ def main():
         else:
             _, version = props_versions(args.props)
             files = verify_artifacts(args.commit, version, args.artifacts)
-            print(json.dumps(submit(StoreClient(os.environ), version, files)))
+            if args.action == "submit":
+                print(json.dumps(submit(StoreClient(os.environ), version, files)))
+            else:
+                print(json.dumps({"storeVersion": version, "verifiedPackages": sorted(files)}))
     except StoreError as exc:
         raise SystemExit(str(exc)) from None
     except Exception:
