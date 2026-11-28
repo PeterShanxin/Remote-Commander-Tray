@@ -69,3 +69,21 @@ jobs:
         if: matrix.arch == 'x64'
         shell: pwsh
         run: ./tools/test-store-install.ps1 -PackagePath artifacts/store/RemoteCommanderTray_${{ steps.version.outputs.value }}_x64.msix
+
+  verify-submission-artifacts:
+    name: Verify complete Store artifact pair
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: Store-*
+          path: ${{ runner.temp }}/store-assets
+      - name: Verify both MSIX packages with the exact release verifier
+        env:
+          STORE_ASSET_ROOT: ${{ runner.temp }}/store-assets
+        run: python3 tools/sync-store-release.py verify-artifacts "$GITHUB_SHA" Directory.Build.props "$STORE_ASSET_ROOT"
