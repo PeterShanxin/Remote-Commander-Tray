@@ -79,7 +79,7 @@ class SyncTests(unittest.TestCase):
             with self.assertRaises(store.StoreError):
                 store.verify_tag(tag, props)
 
-    def test_valid_artifacts_then_fail_if_receipt_or_manifest_changed(self):
+    def test_rejects_wrong_receipt_digest_or_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for arch, machine in store.ARCHITECTURES.items():
@@ -105,6 +105,18 @@ class SyncTests(unittest.TestCase):
                 store.verify_artifacts("b" * 40, VERSION, root)
             path.write_bytes(path.read_bytes() + b"changed")
             with self.assertRaisesRegex(store.StoreError, "store_receipt_mismatch"):
+                store.verify_artifacts(SHA, VERSION, root)
+
+            # With a matching receipt the independently parsed MSIX still
+            # must identify itself as this product and architecture.
+            with zipfile.ZipFile(path, "w") as out:
+                out.writestr("AppxManifest.xml", '<Package><Identity Name="Wrong.Product"/></Package>')
+                out.writestr("RemoteCommanderTray.exe", b"fixture")
+            receipt_path = path.parent / "build-info.json"
+            wrong_identity_receipt = json.loads(receipt_path.read_text())
+            wrong_identity_receipt["SHA256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+            receipt_path.write_text(json.dumps(wrong_identity_receipt))
+            with self.assertRaisesRegex(store.StoreError, "msix_identity_mismatch"):
                 store.verify_artifacts(SHA, VERSION, root)
 
     def test_submission_preserves_listing_and_deduplicates(self):
